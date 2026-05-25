@@ -84,7 +84,7 @@ help:
 	@echo "Usage:"
 	@echo "  make init              - First time setup (download binaries + UI assets + go mod download)"
 	@echo "  make download-binaries - Download supervisord and protoc binaries for your platform"
-	@echo "  make download-ui-assets- Download jQuery, Bootstrap, Glyphicons to ui/ui/lib/"
+	@echo "  make download-ui-assets - Download jQuery, Bootstrap, Glyphicons to ui/ui/lib/"
 	@echo "  make generate-assets   - Generate assets_vfsdata.go from web UI (required before build)"
 	@echo "  make build             - Build vermeer for current platform (default: local architecture)"
 	@echo "  make build-linux-amd64 - Build for Linux AMD64 (for deployment)"

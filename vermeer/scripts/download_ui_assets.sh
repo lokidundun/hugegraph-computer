@@ -17,15 +17,16 @@
 #
 
 set -e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 UI_DIR="$PROJECT_ROOT/ui"
 LIB_DIR="$PROJECT_ROOT/ui/ui/lib"
 
-# Glyphicons source (GitHub raw)
-GLYPHICONS_BASE="https://raw.githubusercontent.com/Darkseal/bootstrap4-glyphicons/master/bootstrap4-glyphicons"
-GLYPHICONS_COMMIT="master"
+# Glyphicons source (GitHub raw) - pinned to specific commit for reproducible builds
+GLYPHICONS_COMMIT="f7b1a17bbe64308d1d8b2b4bb2ba8a0ea621b377"
+GLYPHICONS_BASE="https://raw.githubusercontent.com/Darkseal/bootstrap4-glyphicons/${GLYPHICONS_COMMIT}/bootstrap4-glyphicons"
 
 # Colors for output
 RED='\033[0;31m'

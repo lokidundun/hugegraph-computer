@@ -32,19 +32,20 @@
                 }
             );
         },
-        qeuryGraphs: function () {
+        queryGraphs: function () {
             const $t = $('#graphs_table');
             $t.empty();
             const fields = ['space_name', 'name', 'status', 'state', 'create_time',
                 'update_time', 'use_out_edges', 'use_out_degree'];
             $t.append('<thead><tr/></thead>');
-            $tr = $t.find('thead tr');
+            const $tr = $t.find('thead tr');
             $.each(fields, function (index, field) {
                 $tr.append($('<th/>').text(field));
             });
 
             const ok = function (data) {
-                const $tb = $t.append('<tbody/>');
+                const $tb = $('<tbody/>');
+                $t.append($tb);
                 const rows = data.graphs;
                 $.each(rows, function (index, row) {
                     $tb.append(toTableRow(fields, row));
@@ -65,8 +66,9 @@
             });
 
             const ok = function (data) {
-                const $tb = $t.append('<tbody/>');
-                rows = data.tasks;
+                const $tb = $('<tbody/>');
+                $t.append($tb);
+                const rows = data.tasks;
                 $.each(rows, function (index, row) {
                     $tb.append(toTableRow(fields, row));
                 });
@@ -87,7 +89,7 @@
                 value = row[field];
             }
 
-            $span = $('<span/>').text(value);
+            const $span = $('<span/>').text(value);
 
             switch (value) {
                 case 'error':
@@ -102,7 +104,7 @@
                     $span.addClass('badge badge-lg badge-success');
             }
 
-            $td = $('<td>').append($span);
+            const $td = $('<td>').append($span);
             $row.append($td);
         });
         return $row;
@@ -133,7 +135,7 @@
                     return;
                 }
                 if (caller) {
-                    ok.appply(caller, response);
+                    ok.apply(caller, [response]);
                 } else {
                     ok(response);
                 }
@@ -151,7 +153,7 @@
                     return;
                 }
                 if (caller) {
-                    error.appley(caller, err);
+                    error.apply(caller, [err]);
                 } else {
                     error(err);
                 }
@@ -174,6 +176,6 @@
 })();
 
 $(function () {
-    vermeer.qeuryGraphs();
+    vermeer.queryGraphs ();
     vermeer.queryTasks();
 });

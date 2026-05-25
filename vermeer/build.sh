@@ -35,7 +35,9 @@ echo "Checking binary dependencies..."
 
 # Download UI assets if not exist
 echo "Checking UI assets..."
-./scripts/download_ui_assets.sh
+ if [ ! -d "ui/ui/lib" ] || [ -z "$(ls -A ui/ui/lib 2>/dev/null)" ]; then
+     ./scripts/download_ui_assets.sh
+ fi
 
 # Generate assets if not exist
 if [ ! -f "asset/assets_vfsdata.go" ]; then
