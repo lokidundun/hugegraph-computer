@@ -146,7 +146,7 @@ For quick start and single-machine deployments, we recommend **Vermeer**:
 # Pull the image
 docker pull hugegraph/vermeer:latest
 
-# Change config path in docker-compose.yml
+# Change config path in docker-compose.yaml
 volumes:
       - ~/:/go/bin/config # Change here to your actual config path, e.g., vermeer/config
 

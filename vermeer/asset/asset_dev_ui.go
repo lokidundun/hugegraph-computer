@@ -27,5 +27,5 @@ import (
 
 func init() {
 	// for ui development
-	Assets = http.Dir(common.AppRootPath() + "/ui/")
+	Assets = http.Dir(common.AppRootPath() + "/ui/ui/")
 }

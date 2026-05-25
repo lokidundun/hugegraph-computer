@@ -89,7 +89,12 @@ vermeer/
 │   ├── master.ini
 │   └── worker.ini
 ├── tools/               # Binary dependencies (supervisord, protoc)
-└── ui/                  # Web dashboard
+└── ui/                  # Web dashboard source and dependencies
+    ├── package.json     # Frontend dependencies (jQuery, Bootstrap)
+    └── ui/
+        ├── master.html  # Master dashboard page
+        ├── worker.html  # Worker dashboard page
+        └── lib/         # Downloaded at build time (git-ignored)
 ```
 
 ## Quick Start
@@ -107,8 +112,8 @@ Create a dedicated config directory (e.g., `~/vermeer-config/`) with `master.ini
 Run with Docker:
 
 ```bash
-# Master node
-docker run -v ~/vermeer-config:/go/bin/config hugegraph/vermeer --env=master
+# Master node (with Web UI enabled)
+docker run -v ~/vermeer-config:/go/bin/config hugegraph/vermeer --env=master -auth token -auth_token_factor 1234
 
 # Worker node
 docker run -v ~/vermeer-config:/go/bin/config hugegraph/vermeer --env=worker
@@ -158,6 +163,7 @@ Configure parameters in `vermeer.sh`, then:
 #### Prerequisites
 
 - Go 1.23 or later
+- Node.js/npm (for downloading UI assets)
 - `curl` and `unzip` utilities (for downloading dependencies)
 - Internet connection (for first-time setup)
 
@@ -226,9 +232,40 @@ task_strategy = 1
 
 # Number of parallel tasks
 task_parallel_num = 1
+
+# Authentication mode (none or token)
+# Set to "token" to enable Web UI and API authentication
+auth = none
+
+# Token authentication factor (required when auth=token)
+auth_token_factor = 1234
 ```
 
 **Note**: HugeGraph connection details (`pd_peers`, `server`, `graph`) are provided in the graph load API request, not in the configuration file. See [HugeGraph Integration](#hugegraph-integration) section for details.
+
+### Generating Auth Token
+
+When `auth=token` is enabled, you need to generate a token for login. Use the built-in token generator:
+
+```bash
+# Run with Go
+go run tools/token/token_generator.go -user admin -space default -factor 1234 -i
+
+# Or run in Docker (no local Go required)
+docker run --rm -v $(pwd):/src -v $(pwd)/config:/src/config golang:1.23-alpine sh -c "cd /src && go run tools/token/token_generator.go -user admin -space default -factor 1234 -i"
+```
+
+Parameters:
+- `-user` — Username (default: `foo`)
+- `-space` — Graph space name (default: `bar`)
+- `-factor` — Must match `auth_token_factor` in `master.ini`
+- `-client` — Client identifier (default: `hg`)
+- `-i` — Generate immortal token (never expires)
+
+The generated token can be used in two ways:
+
+1. **HTTP Header**: `Authorization: Bearer <token>`
+2. **Login API**: `POST /api/v1/login` with body `{"token": "<token>"}` (sets cookie)
 
 ### Worker Configuration (`worker.ini`)
 
@@ -277,6 +314,8 @@ worker_group = default
 ## API Overview
 
 Vermeer exposes a REST API on port `6688` (configurable in `master.ini`).
+
+> **Note**: The Web UI (`/ui/*`) is only available when `auth=token` is configured. Set `auth_token_factor` in `master.ini` or pass `-auth token -auth_token_factor <value>` via command line.
 
 ### Key Endpoints
 
@@ -502,7 +541,9 @@ vermeer/tools/protoc/linux64/protoc vermeer/apps/protos/*.proto --go-grpc_out=ve
 
 ## Monitoring
 
-Access the Web UI dashboard at `http://master-ip:6688/ui/` for:
+Access the Web UI dashboard at `http://master-ip:6688/ui/master.html` for:
+
+> **Note**: The Web UI requires `auth=token` in `master.ini` (or `-auth token` via command line). Without token authentication, the UI routes are not registered.
 
 - Worker status and resource usage
 - Active and completed tasks

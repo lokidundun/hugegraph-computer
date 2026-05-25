@@ -33,6 +33,10 @@ go mod download
 echo "Checking binary dependencies..."
 ./scripts/download_binaries.sh
 
+# Download UI assets if not exist
+echo "Checking UI assets..."
+./scripts/download_ui_assets.sh
+
 # Generate assets if not exist
 if [ ! -f "asset/assets_vfsdata.go" ]; then
     echo "Generating assets..."
