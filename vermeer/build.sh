@@ -35,9 +35,9 @@ echo "Checking binary dependencies..."
 
 # Download UI assets if not exist
 echo "Checking UI assets..."
- if [ ! -f "ui/ui/lib/jquery-3.5.1.min.js" ]; then
-     ./scripts/download_ui_assets.sh
- fi
+if [ ! -f "ui/ui/lib/.downloaded" ]; then
+    ./scripts/download_ui_assets.sh
+fi
 
 # Generate assets if not exist
 if [ ! -f "asset/assets_vfsdata.go" ]; then

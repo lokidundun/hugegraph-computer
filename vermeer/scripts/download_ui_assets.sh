@@ -71,34 +71,38 @@ main() {
     # Step 1: npm install (jQuery + Bootstrap)
     log_info "Installing npm dependencies (jQuery, Bootstrap)..."
     cd "$UI_DIR"
-    npm install --no-audit --no-fund 2>&1 | tail -3
+    npm install --no-audit --no-fund
     cd "$PROJECT_ROOT"
+
+    # Read actual versions from package.json (source of truth)
+    JQUERY_VERSION=$(node -p "require('$UI_DIR/package.json').dependencies.jquery")
+    BOOTSTRAP_VERSION=$(node -p "require('$UI_DIR/package.json').dependencies.bootstrap")
 
     # Step 2: Create lib directory structure
     log_info "Copying files to ui/ui/lib/..."
     mkdir -p "$LIB_DIR"
 
-    # Copy jQuery (npm names it jquery.min.js, rename to match original)
-    cp "$UI_DIR/node_modules/jquery/dist/jquery.min.js" "$LIB_DIR/jquery-3.5.1.min.js"
+    # Copy jQuery (npm names it jquery.min.js, rename to match version)
+    cp "$UI_DIR/node_modules/jquery/dist/jquery.min.js" "$LIB_DIR/jquery-${JQUERY_VERSION}.min.js"
 
     # Copy Bootstrap CSS
-    mkdir -p "$LIB_DIR/bootstrap-4.3.1-dist/css"
-    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap.min.css" "$LIB_DIR/bootstrap-4.3.1-dist/css/"
-    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap.min.css.map" "$LIB_DIR/bootstrap-4.3.1-dist/css/"
-    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap-grid.min.css" "$LIB_DIR/bootstrap-4.3.1-dist/css/"
-    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap-grid.min.css.map" "$LIB_DIR/bootstrap-4.3.1-dist/css/"
-    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap-reboot.min.css" "$LIB_DIR/bootstrap-4.3.1-dist/css/"
-    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap-reboot.min.css.map" "$LIB_DIR/bootstrap-4.3.1-dist/css/"
+    mkdir -p "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/css"
+    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap.min.css" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/css/"
+    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap.min.css.map" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/css/"
+    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap-grid.min.css" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/css/"
+    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap-grid.min.css.map" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/css/"
+    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap-reboot.min.css" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/css/"
+    cp "$UI_DIR/node_modules/bootstrap/dist/css/bootstrap-reboot.min.css.map" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/css/"
 
     # Copy Bootstrap JS
-    mkdir -p "$LIB_DIR/bootstrap-4.3.1-dist/js"
-    cp "$UI_DIR/node_modules/bootstrap/dist/js/bootstrap.min.js" "$LIB_DIR/bootstrap-4.3.1-dist/js/"
-    cp "$UI_DIR/node_modules/bootstrap/dist/js/bootstrap.min.js.map" "$LIB_DIR/bootstrap-4.3.1-dist/js/"
-    cp "$UI_DIR/node_modules/bootstrap/dist/js/bootstrap.bundle.min.js" "$LIB_DIR/bootstrap-4.3.1-dist/js/"
-    cp "$UI_DIR/node_modules/bootstrap/dist/js/bootstrap.bundle.min.js.map" "$LIB_DIR/bootstrap-4.3.1-dist/js/"
+    mkdir -p "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/js"
+    cp "$UI_DIR/node_modules/bootstrap/dist/js/bootstrap.min.js" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/js/"
+    cp "$UI_DIR/node_modules/bootstrap/dist/js/bootstrap.min.js.map" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/js/"
+    cp "$UI_DIR/node_modules/bootstrap/dist/js/bootstrap.bundle.min.js" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/js/"
+    cp "$UI_DIR/node_modules/bootstrap/dist/js/bootstrap.bundle.min.js.map" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/js/"
 
     # Copy Bootstrap LICENSE
-    cp "$UI_DIR/node_modules/bootstrap/LICENSE" "$LIB_DIR/bootstrap-4.3.1-dist/"
+    cp "$UI_DIR/node_modules/bootstrap/LICENSE" "$LIB_DIR/bootstrap-${BOOTSTRAP_VERSION}-dist/"
 
     # Create jquery-license (MIT)
     cat > "$LIB_DIR/jquery-license" << 'JQLICENSE'
@@ -149,11 +153,14 @@ JQLICENSE
     download_file "$GLYPHICONS_BASE/maps/glyphicons-fontawesome.min.css" \
         "$LIB_DIR/bootstrap4-glyphicons/maps/glyphicons-fontawesome.min.css"
 
+    # Stamp file for incremental builds
+    touch "$LIB_DIR/.downloaded"
+
     log_info "All UI assets downloaded successfully!"
     log_info ""
     log_info "Downloaded to: $LIB_DIR"
-    log_info "  - jQuery 3.5.1"
-    log_info "  - Bootstrap 4.3.1 (CSS + JS + source maps)"
+    log_info "  - jQuery ${JQUERY_VERSION}"
+    log_info "  - Bootstrap ${BOOTSTRAP_VERSION} (CSS + JS + source maps)"
     log_info "  - Bootstrap4 Glyphicons (CSS + fonts + maps)"
 }
 

@@ -33,14 +33,22 @@ download-binaries:
 
 # Download UI assets (jQuery, Bootstrap, Glyphicons)
 download-ui-assets:
-	@echo "Downloading UI assets..."
-	@./scripts/download_ui_assets.sh || (echo "Failed to download UI assets" && exit 1)
+	@if [ ! -f "ui/ui/lib/.downloaded" ]; then \
+		echo "Downloading UI assets..."; \
+		./scripts/download_ui_assets.sh || (echo "Failed to download UI assets" && exit 1); \
+	else \
+		echo "UI assets already exist, skipping download."; \
+	fi
 
 # Generate assets (vfsdata.go for web UI)
 generate-assets: download-ui-assets
-	@echo "Generating assets..."
-	@cd asset && go generate || (echo "Failed to generate assets" && exit 1)
-	@echo "Assets generated successfully!"
+	@if [ ! -f "asset/assets_vfsdata.go" ]; then \
+		echo "Generating assets..."; \
+		cd asset && go generate || (echo "Failed to generate assets" && exit 1); \
+		echo "Assets generated successfully!"; \
+	else \
+		echo "Assets already generated, skipping."; \
+	fi
 
 # Build vermeer binary
 build:
@@ -73,7 +81,8 @@ clean-all: clean
 	@rm -rf tools/protoc/*/include
 	@echo "Cleaning downloaded UI assets..."
 	@rm -rf ui/node_modules ui/package-lock.json
-	@rm -rf ui/ui/lib
+	@rm -f ui/ui/lib/.downloaded ui/ui/lib/jquery-license
+	@rm -rf ui/ui/lib/bootstrap-4.3.1-dist ui/ui/lib/bootstrap4-glyphicons
 	@echo "All clean completed!"
 
 # Help
