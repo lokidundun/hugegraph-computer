@@ -1,0 +1,53 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with this
+ * work for additional information regarding copyright ownership. The ASF
+ * licenses this file to You under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+/* Move down content because we have a fixed navbar that is 50px tall with 20px padding */
+body {
+    padding-top: 70px;
+    padding-bottom: 20px;
+}
+
+.state_indicator {
+    padding: 0 4px 0 4px;
+}
+
+.literal_output td {
+    font-family: monospace;
+}
+
+.cursor-pointer {
+    cursor: pointer;
+}
+
+.tooltip-inner {
+    max-width: none;
+    text-align: left;
+}
+
+.label {
+    white-space: normal;
+}
+
+/* The navbar adds horizontal padding already */
+.navbar .container-fluid {
+    padding: 0;
+}
+
+/* This class provides style for containers that hold card like (without background) objects within container-fluid and out of accordion */
+.blank-card {
+    padding-bottom: 50px;
+    padding-right: 25px;
+}

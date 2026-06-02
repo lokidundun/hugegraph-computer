@@ -14,6 +14,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-*data*
-*test*
-*.git*
+.git/
+.gitignore
+.gitattributes
+test/
+vermeer_test.go
+vermeer_test.sh
+vermeer_data/
+asset/assets_vfsdata.go
+ui/node_modules/
+ui/package-lock.json
+ui/ui/lib/bootstrap-4.3.1-dist/
+ui/ui/lib/bootstrap4-glyphicons/
+ui/ui/lib/jquery-3.5.1.min.js
+ui/ui/lib/jquery-license
+_tmp_extractor/
+tools/supervisord/*/supervisord
+tools/protoc/*/protoc
+tools/protoc/*/bin/
+tools/protoc/*/include/

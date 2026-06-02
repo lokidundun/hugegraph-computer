@@ -99,6 +99,14 @@ tools/protoc/*/include/
 ######################
 asset/assets_vfsdata.go
 
+# UI dependencies (downloaded via scripts/download_ui_assets.sh) #
+######################
+ui/node_modules/
+ui/package-lock.json
+ui/ui/lib/*
+!ui/ui/lib/functions.js
+!ui/ui/lib/vermeer.css
+
 # AI assistant specific files (we only maintain AGENTS.md) #
 ######################
 CLAUDE.md

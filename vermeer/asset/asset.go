@@ -25,4 +25,4 @@ import (
 )
 
 // Assets contains the project's assets.
-var Assets http.FileSystem = http.Dir("../ui")
+var Assets http.FileSystem = http.Dir("../ui/ui")

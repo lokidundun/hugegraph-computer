@@ -15,13 +15,13 @@
 # limitations under the License.
 #
 
-.PHONY: all init download-binaries generate-assets build clean help
+.PHONY: all init download-binaries download-ui-assets generate-assets build clean help
 
 # Default target
 all: generate-assets build
 
 # Initialize project (first time setup)
-init: download-binaries
+init: download-binaries download-ui-assets
 	@echo "Installing Go dependencies..."
 	go mod download
 	@echo "Project initialized successfully!"
@@ -31,8 +31,17 @@ download-binaries:
 	@echo "Downloading binary dependencies..."
 	@./scripts/download_binaries.sh || (echo "Failed to download binaries" && exit 1)
 
+# Download UI assets (jQuery, Bootstrap, Glyphicons)
+download-ui-assets:
+	@if [ ! -f "ui/ui/lib/.downloaded" ]; then \
+		echo "Downloading UI assets..."; \
+		./scripts/download_ui_assets.sh || (echo "Failed to download UI assets" && exit 1); \
+	else \
+		echo "UI assets already exist, skipping download."; \
+	fi
+
 # Generate assets (vfsdata.go for web UI)
-generate-assets:
+generate-assets: download-ui-assets
 	@echo "Generating assets..."
 	@cd asset && go generate || (echo "Failed to generate assets" && exit 1)
 	@echo "Assets generated successfully!"
@@ -66,6 +75,11 @@ clean-all: clean
 	@rm -rf tools/protoc/*/protoc
 	@rm -rf tools/protoc/*/bin
 	@rm -rf tools/protoc/*/include
+	@echo "Cleaning downloaded UI assets..."
+	@rm -rf ui/node_modules ui/package-lock.json
+	@rm -f ui/ui/lib/.downloaded ui/ui/lib/jquery-license
+	@rm -rf ui/ui/lib/bootstrap-*-dist ui/ui/lib/bootstrap4-glyphicons
+	@rm -f ui/ui/lib/jquery-*.min.js
 	@echo "All clean completed!"
 
 # Help
@@ -73,13 +87,14 @@ help:
 	@echo "Vermeer Build System"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make init              - First time setup (download binaries + go mod download)"
+	@echo "  make init              - First time setup (download binaries + UI assets + go mod download)"
 	@echo "  make download-binaries - Download supervisord and protoc binaries for your platform"
+	@echo "  make download-ui-assets - Download jQuery, Bootstrap, Glyphicons to ui/ui/lib/"
 	@echo "  make generate-assets   - Generate assets_vfsdata.go from web UI (required before build)"
 	@echo "  make build             - Build vermeer for current platform (default: local architecture)"
 	@echo "  make build-linux-amd64 - Build for Linux AMD64 (for deployment)"
 	@echo "  make build-linux-arm64 - Build for Linux ARM64 (for ARM servers)"
 	@echo "  make clean             - Remove generated files and binaries (keep downloaded tools)"
-	@echo "  make clean-all         - Remove everything including downloaded tools"
+	@echo "  make clean-all         - Remove everything including downloaded tools and UI assets"
 	@echo "  make all               - Generate assets and build (default target)"
 	@echo "  make help              - Show this help message"
