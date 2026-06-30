@@ -36,9 +36,14 @@ import org.apache.hugegraph.computer.core.graph.value.LongValue;
 import org.apache.hugegraph.computer.core.graph.value.NullValue;
 import org.apache.hugegraph.computer.core.graph.value.StringValue;
 import org.apache.hugegraph.computer.core.graph.value.Value;
+import org.apache.hugegraph.structure.graph.Edge;
 import org.apache.hugegraph.util.E;
+import org.apache.hugegraph.util.SplicingIdGenerator;
 
 public final class HugeConverter {
+
+    private static final int LEGACY_EDGE_ID_PARTS = 4;
+    private static final int DIRECTIONAL_EDGE_ID_PARTS = 6;
 
     private static final GraphFactory GRAPH_FACTORY =
                                       ComputerContext.instance().graphFactory();
@@ -95,5 +100,20 @@ public final class HugeConverter {
             properties.put(key, value);
         }
         return properties;
+    }
+
+    public static String convertEdgeName(Edge edge) {
+        E.checkArgumentNotNull(edge, "The edge can't be null");
+        String edgeId = edge.id();
+        if (edgeId == null) {
+            return edge.name();
+        }
+
+        String[] parts = SplicingIdGenerator.split(edgeId);
+        if (parts.length >= LEGACY_EDGE_ID_PARTS &&
+            parts.length <= DIRECTIONAL_EDGE_ID_PARTS) {
+            return parts[parts.length - 2];
+        }
+        return edge.name();
     }
 }

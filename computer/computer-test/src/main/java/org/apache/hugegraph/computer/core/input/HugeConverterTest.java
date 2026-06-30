@@ -35,8 +35,10 @@ import org.apache.hugegraph.computer.core.graph.value.NullValue;
 import org.apache.hugegraph.computer.core.graph.value.StringValue;
 import org.apache.hugegraph.computer.core.graph.value.ValueType;
 import org.apache.hugegraph.computer.suite.unit.UnitTestBase;
+import org.apache.hugegraph.structure.graph.Edge;
 import org.apache.hugegraph.testutil.Assert;
 import org.junit.Test;
+import org.mockito.Mockito;
 
 import com.google.common.collect.ImmutableList;
 
@@ -125,5 +127,75 @@ public class HugeConverterTest extends UnitTestBase {
 
         Assert.assertEquals(properties,
                             HugeConverter.convertProperties(rawProperties));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithLegacyFourPartEdgeId() {
+        Edge edge = Mockito.mock(Edge.class);
+        Mockito.when(edge.id()).thenReturn(
+               "S1:178201>5>参数标准!3BA0>S4:239464");
+        Mockito.when(edge.name()).thenReturn("stale_client_name");
+
+        Assert.assertEquals("参数标准!3BA0",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithFivePartEdgeId() {
+        Edge edge = new Edge("belong_to_el_defect");
+        edge.id("S1:178201>5>5>参数标准!3BA0>S4:239464");
+
+        Assert.assertEquals("参数标准!3BA0",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithSixPartEdgeId() {
+        Edge edge = new Edge("belong_to_el_defect");
+        edge.id("S1:178201>O>5>5>参数标准!3BA0>S4:239464");
+
+        Assert.assertEquals("参数标准!3BA0",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithSixPartInEdgeId() {
+        Edge edge = new Edge("belong_to_el_defect");
+        edge.id("S4:239464>I>5>5>参数标准!3BA0>S1:178201");
+
+        Assert.assertEquals("参数标准!3BA0",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithNullEdgeId() {
+        Edge edge = Mockito.mock(Edge.class);
+        Mockito.when(edge.id()).thenReturn(null);
+        Mockito.when(edge.name()).thenReturn("fallback_name");
+
+        Assert.assertEquals("fallback_name",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithUnknownEdgeIdFormat() {
+        Edge edge = Mockito.mock(Edge.class);
+        Mockito.when(edge.id()).thenReturn(
+               "S1:178201>bad>edge");
+        Mockito.when(edge.name()).thenReturn("fallback_name");
+
+        Assert.assertEquals("fallback_name",
+                            HugeConverter.convertEdgeName(edge));
+
+        Mockito.when(edge.id()).thenReturn(
+               "S1:178201>O>5>5>参数标准!3BA0>S4:239464>extra");
+        Assert.assertEquals("fallback_name",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithNullEdge() {
+        Assert.assertThrows(IllegalArgumentException.class,
+                            () -> HugeConverter.convertEdgeName(null));
     }
 }
