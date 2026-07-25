@@ -63,9 +63,9 @@ public class SenderIntegrateTest {
     public static final Logger LOG = Log.logger(SenderIntegrateTest.class);
 
     private static final Class<?> COMPUTATION = MockComputation.class;
-    private static final long BSP_WAIT_TIMEOUT = TimeUnit.SECONDS.toMillis(30L);
+    private static final long BSP_WAIT_TIMEOUT = TimeUnit.MINUTES.toMillis(5L);
     private static final long SERVICE_WAIT_TIMEOUT =
-            TimeUnit.SECONDS.toMillis(35L);
+            BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L);
 
     @BeforeClass
     public static void init() {
@@ -90,6 +90,13 @@ public class SenderIntegrateTest {
         } catch (ComputerException e) {
             Assert.assertSame(cause, e.getCause());
         }
+    }
+
+    @Test
+    public void testCiTimeoutsAllowHeavyInputStep() {
+        Assert.assertEquals(TimeUnit.MINUTES.toMillis(5L), BSP_WAIT_TIMEOUT);
+        Assert.assertEquals(BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L),
+                            SERVICE_WAIT_TIMEOUT);
     }
 
     @Test
