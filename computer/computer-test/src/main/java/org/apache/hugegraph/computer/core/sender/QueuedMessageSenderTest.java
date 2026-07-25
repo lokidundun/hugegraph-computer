@@ -17,8 +17,18 @@
 
 package org.apache.hugegraph.computer.core.sender;
 
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+import org.apache.hugegraph.computer.core.common.exception.TransportException;
 import org.apache.hugegraph.computer.core.config.ComputerOptions;
 import org.apache.hugegraph.computer.core.config.Config;
+import org.apache.hugegraph.computer.core.network.message.MessageType;
 import org.apache.hugegraph.computer.core.worker.MockComputation2;
 import org.apache.hugegraph.computer.suite.unit.UnitTestBase;
 import org.apache.hugegraph.testutil.Assert;
@@ -63,5 +73,148 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         sender.close();
         Assert.assertTrue(ImmutableSet.of(Thread.State.TERMINATED)
                                       .contains(sendExecutor.getState()));
+    }
+
+    @Test
+    public void testControlFutureCanQueueNextControlBeforeCompletionDependentFinishes()
+            throws Exception {
+        QueuedMessageSender sender = new QueuedMessageSender(this.config);
+        ControlFutureClient client = new ControlFutureClient();
+        sender.addWorkerClient(1, client);
+        sender.addWorkerClient(2, new MockTransportClient());
+        sender.init();
+
+        CountDownLatch completionStarted = new CountDownLatch(1);
+        CountDownLatch allowCompletion = new CountDownLatch(1);
+        Thread completionThread = null;
+        try {
+            CompletableFuture<Void> startFuture = sender.send(1,
+                                                               MessageType.START);
+            Assert.assertTrue(client.awaitStart());
+            startFuture.whenComplete((r, e) -> {
+                completionStarted.countDown();
+                try {
+                    allowCompletion.await();
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(exception);
+                }
+            });
+
+            completionThread = new Thread(client::completeStart);
+            completionThread.start();
+            Assert.assertTrue(completionStarted.await(1, TimeUnit.SECONDS));
+
+            CompletableFuture<Void> finishFuture = sender.send(1,
+                                                                MessageType.FINISH);
+            allowCompletion.countDown();
+            completionThread.join(TimeUnit.SECONDS.toMillis(1));
+            Assert.assertFalse(completionThread.isAlive());
+            Assert.assertTrue(client.awaitFinish());
+            client.completeFinish();
+            finishFuture.get(1, TimeUnit.SECONDS);
+        } finally {
+            allowCompletion.countDown();
+            if (completionThread != null) {
+                completionThread.join(TimeUnit.SECONDS.toMillis(1));
+            }
+            sender.close();
+        }
+    }
+
+    @Test
+    public void testTransportExceptionCompletesInFlightControlFuture()
+            throws Exception {
+        QueuedMessageSender sender = new QueuedMessageSender(this.config);
+        ControlFutureClient client = new ControlFutureClient();
+        sender.addWorkerClient(1, client);
+        sender.addWorkerClient(2, new MockTransportClient());
+        sender.init();
+
+        try {
+            CompletableFuture<Void> startFuture = sender.send(1,
+                                                               MessageType.START);
+            Assert.assertTrue(client.awaitStart());
+
+            TransportException cause =
+                    new TransportException("connection failed");
+            sender.transportExceptionCaught(cause, client.connectionId());
+            assertFutureFailedWith(startFuture, cause);
+
+            client.completeStart();
+            assertFutureFailedWith(startFuture, cause);
+        } finally {
+            sender.close();
+        }
+    }
+
+    private static void assertFutureFailedWith(CompletableFuture<Void> future,
+                                                Throwable cause)
+            throws InterruptedException, TimeoutException {
+        try {
+            future.get(1, TimeUnit.SECONDS);
+            Assert.fail("Expected control future to fail");
+        } catch (ExecutionException exception) {
+            Assert.assertSame(cause, exception.getCause());
+        }
+    }
+
+    private static class ControlFutureClient extends MockTransportClient {
+
+        private final CountDownLatch startCalled;
+        private final CountDownLatch finishCalled;
+        private final CompletableFuture<Void> startFuture;
+        private final CompletableFuture<Void> finishFuture;
+
+        public ControlFutureClient() {
+            this.startCalled = new CountDownLatch(1);
+            this.finishCalled = new CountDownLatch(1);
+            this.startFuture = new CompletableFuture<>();
+            this.finishFuture = new CompletableFuture<>();
+        }
+
+        @Override
+        public CompletableFuture<Void> startSessionAsync() {
+            this.startCalled.countDown();
+            return this.startFuture;
+        }
+
+        @Override
+        public CompletableFuture<Void> finishSessionAsync() {
+            this.finishCalled.countDown();
+            return this.finishFuture;
+        }
+
+        @Override
+        public boolean send(MessageType messageType, int partition,
+                            ByteBuffer buffer) {
+            return true;
+        }
+
+        @Override
+        public boolean sessionActive() {
+            return false;
+        }
+
+        @Override
+        public InetSocketAddress remoteAddress() {
+            return new InetSocketAddress("127.0.0.1", 8080);
+        }
+
+        public boolean awaitStart() throws InterruptedException {
+            return this.startCalled.await(1, TimeUnit.SECONDS);
+        }
+
+        public boolean awaitFinish() throws InterruptedException {
+            return this.finishCalled.await(1, TimeUnit.SECONDS);
+        }
+
+        public void completeStart() {
+            this.startFuture.complete(null);
+        }
+
+        public void completeFinish() {
+            this.finishFuture.complete(null);
+        }
     }
 }

@@ -85,15 +85,12 @@ public class QueuedMessageSender implements MessageSender {
     public CompletableFuture<Void> send(int workerId, MessageType type)
                                         throws InterruptedException {
         WorkerChannel channel = this.channels[channelId(workerId)];
-        CompletableFuture<Void> future = channel.newFuture();
-        future.whenComplete((r, e) -> {
-            channel.resetFuture(future);
-        });
+        CompletableFuture<Void> future = new CompletableFuture<>();
         /*
          * Control message just need message type is enough,
          * partitionId = -1 and buffer = null represents a meaningless value
          */
-        channel.queue.put(new QueuedMessage(-1, type, null));
+        channel.queue.put(new QueuedMessage(-1, type, null, future));
         return future;
     }
 
@@ -108,7 +105,7 @@ public class QueuedMessageSender implements MessageSender {
     public void transportExceptionCaught(TransportException cause, ConnectionId connectionId) {
         for (WorkerChannel channel : this.channels) {
             if (channel.client.connectionId().equals(connectionId)) {
-                channel.futureRef.get().completeExceptionally(cause);
+                channel.transportExceptionCaught(cause);
             }
         }
     }
@@ -227,75 +224,92 @@ public class QueuedMessageSender implements MessageSender {
         private final MessageQueue queue;
         // Each target worker has a TransportClient
         private final TransportClient client;
-        private final AtomicReference<CompletableFuture<Void>> futureRef;
+        private final AtomicReference<CompletableFuture<Void>> controlFutureRef;
 
         public WorkerChannel(int workerId, MessageQueue queue,
                              TransportClient client) {
             this.workerId = workerId;
             this.queue = queue;
             this.client = client;
-            this.futureRef = new AtomicReference<>();
-        }
-
-        public CompletableFuture<Void> newFuture() {
-            CompletableFuture<Void> future = new CompletableFuture<>();
-            if (!this.futureRef.compareAndSet(null, future)) {
-                throw new ComputerException("The origin future must be null");
-            }
-            return future;
-        }
-
-        public void resetFuture(CompletableFuture<Void> future) {
-            if (!this.futureRef.compareAndSet(future, null)) {
-                throw new ComputerException("Failed to reset futureRef, " +
-                                            "expect future object is %s, " +
-                                            "but some thread modified it",
-                                            future);
-            }
+            this.controlFutureRef = new AtomicReference<>();
         }
 
         public boolean doSend(QueuedMessage message)
                               throws TransportException, InterruptedException {
             switch (message.type()) {
                 case START:
-                    this.sendStartMessage();
+                    this.sendStartMessage(message.controlFuture());
                     return true;
                 case FINISH:
-                    this.sendFinishMessage();
+                    this.sendFinishMessage(message.controlFuture());
                     return true;
                 default:
                     return this.sendDataMessage(message);
             }
         }
 
-        public void sendStartMessage() throws TransportException {
-            this.client.startSessionAsync().whenComplete((r, e) -> {
-                CompletableFuture<Void> future = this.futureRef.get();
-                assert future != null;
-
+        public void sendStartMessage(CompletableFuture<Void> future)
+                                     throws TransportException {
+            this.setControlFuture(future);
+            try {
+                this.client.startSessionAsync().whenComplete((r, e) -> {
                 if (e != null) {
                     LOG.info("Failed to start session connected to {}", this);
-                    future.completeExceptionally(e);
                 } else {
                     LOG.info("Start session connected to {}", this);
-                    future.complete(null);
                 }
-            });
+                this.completeControlFuture(future, e);
+                });
+            } catch (TransportException e) {
+                this.completeControlFuture(future, e);
+                throw e;
+            }
         }
 
-        public void sendFinishMessage() throws TransportException {
-            this.client.finishSessionAsync().whenComplete((r, e) -> {
-                CompletableFuture<Void> future = this.futureRef.get();
-                assert future != null;
-
+        public void sendFinishMessage(CompletableFuture<Void> future)
+                                      throws TransportException {
+            this.setControlFuture(future);
+            try {
+                this.client.finishSessionAsync().whenComplete((r, e) -> {
                 if (e != null) {
                     LOG.info("Failed to finish session connected to {}", this);
-                    future.completeExceptionally(e);
                 } else {
                     LOG.info("Finish session connected to {}", this);
-                    future.complete(null);
                 }
-            });
+                this.completeControlFuture(future, e);
+                });
+            } catch (TransportException e) {
+                this.completeControlFuture(future, e);
+                throw e;
+            }
+        }
+
+        public void transportExceptionCaught(TransportException cause) {
+            CompletableFuture<Void> future = this.controlFutureRef.getAndSet(null);
+            if (future != null) {
+                future.completeExceptionally(cause);
+            }
+        }
+
+        private void setControlFuture(CompletableFuture<Void> future) {
+            if (!this.controlFutureRef.compareAndSet(null, future)) {
+                ComputerException e = new ComputerException(
+                                      "The origin future must be null");
+                future.completeExceptionally(e);
+                throw e;
+            }
+        }
+
+        private void completeControlFuture(CompletableFuture<Void> future,
+                                           Throwable cause) {
+            if (!this.controlFutureRef.compareAndSet(future, null)) {
+                return;
+            }
+            if (cause == null) {
+                future.complete(null);
+            } else {
+                future.completeExceptionally(cause);
+            }
         }
 
         public boolean sendDataMessage(QueuedMessage message)
