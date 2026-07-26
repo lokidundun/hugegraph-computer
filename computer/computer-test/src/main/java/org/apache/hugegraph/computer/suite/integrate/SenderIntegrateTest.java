@@ -23,13 +23,13 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import org.apache.hugegraph.computer.algorithm.centrality.pagerank.PageRankParams;
@@ -55,8 +55,6 @@ import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.slf4j.Logger;
-
-import com.google.common.collect.Sets;
 
 public class SenderIntegrateTest {
 
@@ -100,9 +98,42 @@ public class SenderIntegrateTest {
     }
 
     @Test
+    public void testServiceLifecycleClosesLateRegisteredService() {
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
+        AtomicBoolean closed = new AtomicBoolean();
+
+        lifecycle.closeAll();
+
+        Assert.assertFalse(lifecycle.register(() -> closed.set(true)));
+        Assert.assertTrue(closed.get());
+    }
+
+    @Test
+    public void testCloseServicesAndJoinStopsSpawnedThreads() throws Exception {
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
+        AtomicBoolean closed = new AtomicBoolean();
+        CountDownLatch started = new CountDownLatch(1);
+        Thread thread = new Thread(() -> {
+            started.countDown();
+            try {
+                Thread.sleep(Long.MAX_VALUE);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        lifecycle.register(() -> closed.set(true));
+        thread.start();
+        Assert.assertTrue(started.await(1, TimeUnit.SECONDS));
+
+        closeServicesAndJoin(lifecycle, Arrays.asList(thread));
+
+        Assert.assertTrue(closed.get());
+        Assert.assertFalse(thread.isAlive());
+    }
+
+    @Test
     public void testOneWorker() {
-        AtomicReference<MasterService> masterServiceRef = new AtomicReference<>();
-        AtomicReference<WorkerService> workerServiceRef = new AtomicReference<>();
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
         CompletableFuture<Void> masterFuture = new CompletableFuture<>();
         Thread masterThread = new Thread(() -> {
             String[] args = OptionsBuilder.newInstance()
@@ -121,10 +152,18 @@ public class SenderIntegrateTest {
                                           .withRpcServerPort(8611)
                                           .withRpcServerPort(0)
                                           .build();
-            try (MasterService service = initMaster(args)) {
-                masterServiceRef.set(service);
-                service.execute();
-                masterFuture.complete(null);
+            try {
+                MasterService service = initMaster(args);
+                try {
+                    if (!lifecycle.register(service::close)) {
+                        masterFuture.cancel(false);
+                        return;
+                    }
+                    service.execute();
+                    masterFuture.complete(null);
+                } finally {
+                    closeMaster(service);
+                }
             } catch (Exception e) {
                 LOG.error("Failed to execute master service", e);
                 masterFuture.completeExceptionally(e);
@@ -148,10 +187,18 @@ public class SenderIntegrateTest {
                                           .withBufferCapacity(60)
                                           .withTransoprtServerPort(0)
                                           .build();
-            try (WorkerService service = initWorker(args)) {
-                workerServiceRef.set(service);
-                service.execute();
-                workerFuture.complete(null);
+            try {
+                WorkerService service = initWorker(args);
+                try {
+                    if (!lifecycle.register(service::close)) {
+                        workerFuture.cancel(false);
+                        return;
+                    }
+                    service.execute();
+                    workerFuture.complete(null);
+                } finally {
+                    closeWorker(service);
+                }
             } catch (Throwable e) {
                 LOG.error("Failed to execute worker service", e);
                 workerFuture.completeExceptionally(e);
@@ -164,8 +211,8 @@ public class SenderIntegrateTest {
         try {
             waitForServices(Arrays.asList(workerFuture, masterFuture));
         } finally {
-            closeWorker(workerServiceRef.get());
-            closeMaster(masterServiceRef.get());
+            closeServicesAndJoin(lifecycle,
+                                 Arrays.asList(masterThread, workerThread));
         }
     }
 
@@ -173,8 +220,7 @@ public class SenderIntegrateTest {
     public void testMultiWorkers() throws IOException {
         int workerCount = 3;
         int partitionCount = 3;
-        AtomicReference<MasterService> masterServiceRef = new AtomicReference<>();
-        Set<WorkerService> workerServices = Sets.newConcurrentHashSet();
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
         CompletableFuture<Void> masterFuture = new CompletableFuture<>();
         Thread masterThread = new Thread(() -> {
             String[] args = OptionsBuilder.newInstance()
@@ -193,9 +239,16 @@ public class SenderIntegrateTest {
                                           .build();
             try {
                 MasterService service = initMaster(args);
-                masterServiceRef.set(service);
-                service.execute();
-                masterFuture.complete(null);
+                try {
+                    if (!lifecycle.register(service::close)) {
+                        masterFuture.cancel(false);
+                        return;
+                    }
+                    service.execute();
+                    masterFuture.complete(null);
+                } finally {
+                    closeMaster(service);
+                }
             } catch (Throwable e) {
                 LOG.error("Failed to execute master service", e);
                 masterFuture.completeExceptionally(e);
@@ -226,9 +279,16 @@ public class SenderIntegrateTest {
                         .build();
                 try {
                     WorkerService service = initWorker(args);
-                    workerServices.add(service);
-                    service.execute();
-                    workerFuture.complete(null);
+                    try {
+                        if (!lifecycle.register(service::close)) {
+                            workerFuture.cancel(false);
+                            return;
+                        }
+                        service.execute();
+                        workerFuture.complete(null);
+                    } finally {
+                        closeWorker(service);
+                    }
                 } catch (Throwable e) {
                     LOG.error("Failed to execute worker service", e);
                     workerFuture.completeExceptionally(e);
@@ -248,17 +308,15 @@ public class SenderIntegrateTest {
         try {
             waitForServices(futures);
         } finally {
-            for (WorkerService workerService : workerServices) {
-                closeWorker(workerService);
-            }
-            closeMaster(masterServiceRef.get());
+            List<Thread> threads = new ArrayList<>(workers.keySet());
+            threads.add(masterThread);
+            closeServicesAndJoin(lifecycle, threads);
         }
     }
 
     @Test
     public void testOneWorkerWithBusyClient() {
-        AtomicReference<MasterService> masterServiceRef = new AtomicReference<>();
-        AtomicReference<WorkerService> workerServiceRef = new AtomicReference<>();
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
         CompletableFuture<Void> masterFuture = new CompletableFuture<>();
         Thread masterThread = new Thread(() -> {
             String[] args = OptionsBuilder.newInstance()
@@ -276,10 +334,18 @@ public class SenderIntegrateTest {
                                           .withRpcServerHost("127.0.0.1")
                                           .withRpcServerPort(0)
                                           .build();
-            try (MasterService service = initMaster(args)) {
-                masterServiceRef.set(service);
-                service.execute();
-                masterFuture.complete(null);
+            try {
+                MasterService service = initMaster(args);
+                try {
+                    if (!lifecycle.register(service::close)) {
+                        masterFuture.cancel(false);
+                        return;
+                    }
+                    service.execute();
+                    masterFuture.complete(null);
+                } finally {
+                    closeMaster(service);
+                }
             } catch (Throwable e) {
                 LOG.error("Failed to execute master service", e);
                 masterFuture.completeExceptionally(e);
@@ -304,12 +370,20 @@ public class SenderIntegrateTest {
                                           .withWriteBufferLowMark(10)
                                           .withTransoprtServerPort(transoprtServerPort)
                                           .build();
-            try (WorkerService service = initWorker(args)) {
-                workerServiceRef.set(service);
-                // Let send rate slowly
-                this.slowSendFunc(service, transoprtServerPort);
-                service.execute();
-                workerFuture.complete(null);
+            try {
+                WorkerService service = initWorker(args);
+                try {
+                    if (!lifecycle.register(service::close)) {
+                        workerFuture.cancel(false);
+                        return;
+                    }
+                    // Let send rate slowly
+                    this.slowSendFunc(service, transoprtServerPort);
+                    service.execute();
+                    workerFuture.complete(null);
+                } finally {
+                    closeWorker(service);
+                }
             } catch (Throwable e) {
                 LOG.error("Failed to execute worker service", e);
                 workerFuture.completeExceptionally(e);
@@ -322,8 +396,8 @@ public class SenderIntegrateTest {
         try {
             waitForServices(Arrays.asList(workerFuture, masterFuture));
         } finally {
-            closeWorker(workerServiceRef.get());
-            closeMaster(masterServiceRef.get());
+            closeServicesAndJoin(lifecycle,
+                                 Arrays.asList(masterThread, workerThread));
         }
     }
 
@@ -400,6 +474,27 @@ public class SenderIntegrateTest {
         }
     }
 
+    private static void closeServicesAndJoin(ServiceLifecycle lifecycle,
+                                             List<Thread> threads) {
+        lifecycle.closeAll();
+        for (Thread thread : threads) {
+            thread.interrupt();
+        }
+        for (Thread thread : threads) {
+            try {
+                thread.join(SERVICE_WAIT_TIMEOUT);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ComputerException("Interrupted when waiting for " +
+                                            "service thread to stop", e);
+            }
+            if (thread.isAlive()) {
+                throw new ComputerException("Timed out to wait for service " +
+                                            "thread to stop");
+            }
+        }
+    }
+
     private static void closeWorker(WorkerService service) {
         if (service != null) {
             service.close();
@@ -409,6 +504,38 @@ public class SenderIntegrateTest {
     private static void closeMaster(MasterService service) {
         if (service != null) {
             service.close();
+        }
+    }
+
+    private static class ServiceLifecycle {
+
+        private final List<Runnable> closers = new ArrayList<>();
+        private boolean closing;
+
+        public boolean register(Runnable closer) {
+            boolean closeImmediately;
+            synchronized (this) {
+                closeImmediately = this.closing;
+                if (!closeImmediately) {
+                    this.closers.add(closer);
+                }
+            }
+            if (closeImmediately) {
+                closer.run();
+            }
+            return !closeImmediately;
+        }
+
+        public void closeAll() {
+            List<Runnable> closers;
+            synchronized (this) {
+                this.closing = true;
+                closers = new ArrayList<>(this.closers);
+                this.closers.clear();
+            }
+            for (Runnable closer : closers) {
+                closer.run();
+            }
         }
     }
 

@@ -250,7 +250,12 @@ public class QueuedMessageSender implements MessageSender {
 
         public void sendStartMessage(CompletableFuture<Void> future)
                                      throws TransportException {
-            this.setControlFuture(future);
+            try {
+                this.setControlFuture(future);
+            } catch (ComputerException e) {
+                // The control future has been completed exceptionally
+                return;
+            }
             try {
                 this.client.startSessionAsync().whenComplete((r, e) -> {
                 if (e != null) {
@@ -268,7 +273,12 @@ public class QueuedMessageSender implements MessageSender {
 
         public void sendFinishMessage(CompletableFuture<Void> future)
                                       throws TransportException {
-            this.setControlFuture(future);
+            try {
+                this.setControlFuture(future);
+            } catch (ComputerException e) {
+                // The control future has been completed exceptionally
+                return;
+            }
             try {
                 this.client.finishSessionAsync().whenComplete((r, e) -> {
                 if (e != null) {

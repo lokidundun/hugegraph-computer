@@ -148,6 +148,43 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         }
     }
 
+    @Test
+    public void testControlFutureConflictKeepsSendExecutorAlive()
+            throws Exception {
+        QueuedMessageSender sender = new QueuedMessageSender(this.config);
+        ControlFutureClient client = new ControlFutureClient();
+        sender.addWorkerClient(1, client);
+        sender.addWorkerClient(2, new MockTransportClient());
+        sender.init();
+
+        try {
+            CompletableFuture<Void> startFuture = sender.send(1,
+                                                               MessageType.START);
+            Assert.assertTrue(client.awaitStart());
+
+            CompletableFuture<Void> conflictingFinishFuture = sender.send(
+                    1, MessageType.FINISH);
+            assertFutureFailedWithMessage(conflictingFinishFuture,
+                                          "The origin future must be null");
+
+            Thread sendExecutor = Whitebox.getInternalState(sender,
+                                                             "sendExecutor");
+            sendExecutor.join(TimeUnit.SECONDS.toMillis(1));
+            Assert.assertTrue(sendExecutor.isAlive());
+
+            client.completeStart();
+            startFuture.get(1, TimeUnit.SECONDS);
+
+            CompletableFuture<Void> finishFuture = sender.send(1,
+                                                                 MessageType.FINISH);
+            Assert.assertTrue(client.awaitFinish());
+            client.completeFinish();
+            finishFuture.get(1, TimeUnit.SECONDS);
+        } finally {
+            sender.close();
+        }
+    }
+
     private static void assertFutureFailedWith(CompletableFuture<Void> future,
                                                 Throwable cause)
             throws InterruptedException, TimeoutException {
@@ -156,6 +193,17 @@ public class QueuedMessageSenderTest extends UnitTestBase {
             Assert.fail("Expected control future to fail");
         } catch (ExecutionException exception) {
             Assert.assertSame(cause, exception.getCause());
+        }
+    }
+
+    private static void assertFutureFailedWithMessage(CompletableFuture<Void> future,
+                                                       String message)
+            throws InterruptedException, TimeoutException {
+        try {
+            future.get(1, TimeUnit.SECONDS);
+            Assert.fail("Expected control future to fail");
+        } catch (ExecutionException exception) {
+            Assert.assertContains(message, exception.getCause().getMessage());
         }
     }
 
