@@ -268,6 +268,8 @@ public class QueuedMessageSender implements MessageSender {
             } catch (TransportException e) {
                 this.completeControlFuture(future, e);
                 throw e;
+            } catch (RuntimeException e) {
+                this.completeControlFuture(future, e);
             }
         }
 
@@ -291,6 +293,8 @@ public class QueuedMessageSender implements MessageSender {
             } catch (TransportException e) {
                 this.completeControlFuture(future, e);
                 throw e;
+            } catch (RuntimeException e) {
+                this.completeControlFuture(future, e);
             }
         }
 

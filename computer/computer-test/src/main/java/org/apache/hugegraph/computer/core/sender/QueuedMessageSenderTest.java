@@ -107,10 +107,10 @@ public class QueuedMessageSenderTest extends UnitTestBase {
 
             CompletableFuture<Void> finishFuture = sender.send(1,
                                                                 MessageType.FINISH);
+            Assert.assertTrue(client.awaitFinish());
             allowCompletion.countDown();
             completionThread.join(TimeUnit.SECONDS.toMillis(1));
             Assert.assertFalse(completionThread.isAlive());
-            Assert.assertTrue(client.awaitFinish());
             client.completeFinish();
             finishFuture.get(1, TimeUnit.SECONDS);
         } finally {
@@ -141,8 +141,54 @@ public class QueuedMessageSenderTest extends UnitTestBase {
             sender.transportExceptionCaught(cause, client.connectionId());
             assertFutureFailedWith(startFuture, cause);
 
+            CompletableFuture<Void> finishFuture = sender.send(1,
+                                                                MessageType.FINISH);
+            Assert.assertTrue(client.awaitFinish());
             client.completeStart();
             assertFutureFailedWith(startFuture, cause);
+
+            client.completeFinish();
+            finishFuture.get(1, TimeUnit.SECONDS);
+        } finally {
+            sender.close();
+        }
+    }
+
+    @Test
+    public void testSynchronousControlFailureCompletesFutureAndKeepsExecutorAlive()
+            throws Exception {
+        QueuedMessageSender sender = new QueuedMessageSender(this.config);
+        ControlFutureClient client = new ControlFutureClient();
+        sender.addWorkerClient(1, client);
+        sender.addWorkerClient(2, new MockTransportClient());
+        sender.init();
+
+        try {
+            RuntimeException startCause =
+                    new IllegalArgumentException("start session failed");
+            client.failStartWith(startCause);
+            CompletableFuture<Void> startFuture = sender.send(1,
+                                                               MessageType.START);
+            assertFutureFailedWith(startFuture, startCause);
+
+            RuntimeException finishCause =
+                    new IllegalArgumentException("finish session failed");
+            client.failFinishWith(finishCause);
+            CompletableFuture<Void> finishFuture = sender.send(1,
+                                                                MessageType.FINISH);
+            assertFutureFailedWith(finishFuture, finishCause);
+
+            Thread sendExecutor = Whitebox.getInternalState(sender,
+                                                             "sendExecutor");
+            sendExecutor.join(TimeUnit.SECONDS.toMillis(1));
+            Assert.assertTrue(sendExecutor.isAlive());
+
+            client.failStartWith(null);
+            CompletableFuture<Void> nextStartFuture = sender.send(1,
+                                                                   MessageType.START);
+            Assert.assertTrue(client.awaitStart());
+            client.completeStart();
+            nextStartFuture.get(1, TimeUnit.SECONDS);
         } finally {
             sender.close();
         }
@@ -213,6 +259,8 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         private final CountDownLatch finishCalled;
         private final CompletableFuture<Void> startFuture;
         private final CompletableFuture<Void> finishFuture;
+        private RuntimeException startFailure;
+        private RuntimeException finishFailure;
 
         public ControlFutureClient() {
             this.startCalled = new CountDownLatch(1);
@@ -223,12 +271,18 @@ public class QueuedMessageSenderTest extends UnitTestBase {
 
         @Override
         public CompletableFuture<Void> startSessionAsync() {
+            if (this.startFailure != null) {
+                throw this.startFailure;
+            }
             this.startCalled.countDown();
             return this.startFuture;
         }
 
         @Override
         public CompletableFuture<Void> finishSessionAsync() {
+            if (this.finishFailure != null) {
+                throw this.finishFailure;
+            }
             this.finishCalled.countDown();
             return this.finishFuture;
         }
@@ -263,6 +317,14 @@ public class QueuedMessageSenderTest extends UnitTestBase {
 
         public void completeFinish() {
             this.finishFuture.complete(null);
+        }
+
+        public void failStartWith(RuntimeException failure) {
+            this.startFailure = failure;
+        }
+
+        public void failFinishWith(RuntimeException failure) {
+            this.finishFailure = failure;
         }
     }
 }

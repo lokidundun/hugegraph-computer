@@ -104,8 +104,32 @@ public class SenderIntegrateTest {
 
         lifecycle.closeAll();
 
-        Assert.assertFalse(lifecycle.register(() -> closed.set(true)));
+        Assert.assertFalse(lifecycle.registerWorker(() -> closed.set(true)));
         Assert.assertTrue(closed.get());
+    }
+
+    @Test
+    public void testServiceLifecycleClosesWorkersBeforeMasterAfterFailure() {
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
+        AtomicBoolean activeWorkerClosed = new AtomicBoolean();
+        AtomicBoolean masterClosed = new AtomicBoolean();
+        RuntimeException workerFailure =
+                new IllegalStateException("worker close failed");
+
+        lifecycle.registerMaster(() -> {
+            Assert.assertTrue(activeWorkerClosed.get());
+            masterClosed.set(true);
+        });
+        lifecycle.registerWorker(() -> {
+            throw workerFailure;
+        });
+        lifecycle.registerWorker(() -> activeWorkerClosed.set(true));
+
+        Throwable failure = lifecycle.closeAll();
+
+        Assert.assertSame(workerFailure, failure);
+        Assert.assertTrue(activeWorkerClosed.get());
+        Assert.assertTrue(masterClosed.get());
     }
 
     @Test
@@ -121,7 +145,7 @@ public class SenderIntegrateTest {
                 Thread.currentThread().interrupt();
             }
         });
-        lifecycle.register(() -> closed.set(true));
+        lifecycle.registerWorker(() -> closed.set(true));
         thread.start();
         Assert.assertTrue(started.await(1, TimeUnit.SECONDS));
 
@@ -155,7 +179,7 @@ public class SenderIntegrateTest {
             try {
                 MasterService service = initMaster(args);
                 try {
-                    if (!lifecycle.register(service::close)) {
+                    if (!lifecycle.registerMaster(service::close)) {
                         masterFuture.cancel(false);
                         return;
                     }
@@ -190,7 +214,7 @@ public class SenderIntegrateTest {
             try {
                 WorkerService service = initWorker(args);
                 try {
-                    if (!lifecycle.register(service::close)) {
+                    if (!lifecycle.registerWorker(service::close)) {
                         workerFuture.cancel(false);
                         return;
                     }
@@ -240,7 +264,7 @@ public class SenderIntegrateTest {
             try {
                 MasterService service = initMaster(args);
                 try {
-                    if (!lifecycle.register(service::close)) {
+                    if (!lifecycle.registerMaster(service::close)) {
                         masterFuture.cancel(false);
                         return;
                     }
@@ -280,7 +304,7 @@ public class SenderIntegrateTest {
                 try {
                     WorkerService service = initWorker(args);
                     try {
-                        if (!lifecycle.register(service::close)) {
+                        if (!lifecycle.registerWorker(service::close)) {
                             workerFuture.cancel(false);
                             return;
                         }
@@ -337,7 +361,7 @@ public class SenderIntegrateTest {
             try {
                 MasterService service = initMaster(args);
                 try {
-                    if (!lifecycle.register(service::close)) {
+                    if (!lifecycle.registerMaster(service::close)) {
                         masterFuture.cancel(false);
                         return;
                     }
@@ -373,7 +397,7 @@ public class SenderIntegrateTest {
             try {
                 WorkerService service = initWorker(args);
                 try {
-                    if (!lifecycle.register(service::close)) {
+                    if (!lifecycle.registerWorker(service::close)) {
                         workerFuture.cancel(false);
                         return;
                     }
@@ -476,7 +500,7 @@ public class SenderIntegrateTest {
 
     private static void closeServicesAndJoin(ServiceLifecycle lifecycle,
                                              List<Thread> threads) {
-        lifecycle.closeAll();
+        Throwable closeFailure = lifecycle.closeAll();
         for (Thread thread : threads) {
             thread.interrupt();
         }
@@ -492,6 +516,9 @@ public class SenderIntegrateTest {
                 throw new ComputerException("Timed out to wait for service " +
                                             "thread to stop");
             }
+        }
+        if (closeFailure != null) {
+            throw new ComputerException("Failed to close service", closeFailure);
         }
     }
 
@@ -509,15 +536,24 @@ public class SenderIntegrateTest {
 
     private static class ServiceLifecycle {
 
-        private final List<Runnable> closers = new ArrayList<>();
+        private final List<Runnable> workerClosers = new ArrayList<>();
+        private final List<Runnable> masterClosers = new ArrayList<>();
         private boolean closing;
 
-        public boolean register(Runnable closer) {
+        public boolean registerWorker(Runnable closer) {
+            return this.register(this.workerClosers, closer);
+        }
+
+        public boolean registerMaster(Runnable closer) {
+            return this.register(this.masterClosers, closer);
+        }
+
+        private boolean register(List<Runnable> closers, Runnable closer) {
             boolean closeImmediately;
             synchronized (this) {
                 closeImmediately = this.closing;
                 if (!closeImmediately) {
-                    this.closers.add(closer);
+                    closers.add(closer);
                 }
             }
             if (closeImmediately) {
@@ -526,16 +562,34 @@ public class SenderIntegrateTest {
             return !closeImmediately;
         }
 
-        public void closeAll() {
-            List<Runnable> closers;
+        public Throwable closeAll() {
+            List<Runnable> workerClosers;
+            List<Runnable> masterClosers;
             synchronized (this) {
                 this.closing = true;
-                closers = new ArrayList<>(this.closers);
-                this.closers.clear();
+                workerClosers = new ArrayList<>(this.workerClosers);
+                masterClosers = new ArrayList<>(this.masterClosers);
+                this.workerClosers.clear();
+                this.masterClosers.clear();
             }
+            Throwable failure = closeAll(workerClosers, null);
+            return closeAll(masterClosers, failure);
+        }
+
+        private static Throwable closeAll(List<Runnable> closers,
+                                          Throwable failure) {
             for (Runnable closer : closers) {
-                closer.run();
+                try {
+                    closer.run();
+                } catch (Throwable e) {
+                    if (failure == null) {
+                        failure = e;
+                    } else {
+                        failure.addSuppressed(e);
+                    }
+                }
             }
+            return failure;
         }
     }
 
