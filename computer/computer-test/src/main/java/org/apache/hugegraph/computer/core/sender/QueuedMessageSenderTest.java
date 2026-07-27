@@ -155,6 +155,36 @@ public class QueuedMessageSenderTest extends UnitTestBase {
     }
 
     @Test
+    public void testTransportExceptionCompletesQueuedControlFutureBeforeDispatch()
+            throws Exception {
+        QueuedMessageSender sender = new QueuedMessageSender(this.config);
+        ControlFutureClient client = new ControlFutureClient();
+        sender.addWorkerClient(1, client);
+        sender.addWorkerClient(2, new MockTransportClient());
+        sender.init();
+
+        client.blockDataSend();
+        try {
+            sender.send(1, new QueuedMessage(0, MessageType.MSG,
+                                              ByteBuffer.allocate(1)));
+            Assert.assertTrue(client.awaitDataSend());
+
+            CompletableFuture<Void> startFuture = sender.send(1,
+                                                               MessageType.START);
+            TransportException cause =
+                    new TransportException("connection failed before start");
+            sender.transportExceptionCaught(cause, client.connectionId());
+            assertFutureFailedWith(startFuture, cause);
+
+            client.allowDataSend();
+            Assert.assertFalse(client.awaitStart());
+        } finally {
+            client.allowDataSend();
+            sender.close();
+        }
+    }
+
+    @Test
     public void testSynchronousControlFailureCompletesFutureAndKeepsExecutorAlive()
             throws Exception {
         QueuedMessageSender sender = new QueuedMessageSender(this.config);
@@ -189,6 +219,51 @@ public class QueuedMessageSenderTest extends UnitTestBase {
             Assert.assertTrue(client.awaitStart());
             client.completeStart();
             nextStartFuture.get(1, TimeUnit.SECONDS);
+        } finally {
+            sender.close();
+        }
+    }
+
+    @Test
+    public void testSynchronousTransportFailureKeepsExecutorAliveForOtherClients()
+            throws Exception {
+        QueuedMessageSender sender = new QueuedMessageSender(this.config);
+        ControlFutureClient failedClient = new ControlFutureClient();
+        ControlFutureClient activeClient = new ControlFutureClient();
+        sender.addWorkerClient(1, failedClient);
+        sender.addWorkerClient(2, activeClient);
+        sender.init();
+
+        try {
+            TransportException startCause =
+                    new TransportException("start session failed");
+            failedClient.failStartWithTransportException(startCause);
+            CompletableFuture<Void> failedStart = sender.send(1,
+                                                               MessageType.START);
+            assertFutureFailedWith(failedStart, startCause);
+
+            CompletableFuture<Void> activeStart = sender.send(2,
+                                                               MessageType.START);
+            Assert.assertTrue(activeClient.awaitStart());
+            activeClient.completeStart();
+            activeStart.get(1, TimeUnit.SECONDS);
+
+            TransportException finishCause =
+                    new TransportException("finish session failed");
+            failedClient.failFinishWithTransportException(finishCause);
+            CompletableFuture<Void> failedFinish = sender.send(1,
+                                                                MessageType.FINISH);
+            assertFutureFailedWith(failedFinish, finishCause);
+
+            CompletableFuture<Void> activeFinish = sender.send(2,
+                                                                MessageType.FINISH);
+            Assert.assertTrue(activeClient.awaitFinish());
+            activeClient.completeFinish();
+            activeFinish.get(1, TimeUnit.SECONDS);
+
+            Thread sendExecutor = Whitebox.getInternalState(sender,
+                                                             "sendExecutor");
+            Assert.assertTrue(sendExecutor.isAlive());
         } finally {
             sender.close();
         }
@@ -257,20 +332,31 @@ public class QueuedMessageSenderTest extends UnitTestBase {
 
         private final CountDownLatch startCalled;
         private final CountDownLatch finishCalled;
+        private final CountDownLatch dataSendCalled;
+        private final CountDownLatch allowDataSend;
         private final CompletableFuture<Void> startFuture;
         private final CompletableFuture<Void> finishFuture;
         private RuntimeException startFailure;
         private RuntimeException finishFailure;
+        private TransportException startTransportFailure;
+        private TransportException finishTransportFailure;
+        private boolean blockDataSend;
 
         public ControlFutureClient() {
             this.startCalled = new CountDownLatch(1);
             this.finishCalled = new CountDownLatch(1);
+            this.dataSendCalled = new CountDownLatch(1);
+            this.allowDataSend = new CountDownLatch(1);
             this.startFuture = new CompletableFuture<>();
             this.finishFuture = new CompletableFuture<>();
         }
 
         @Override
-        public CompletableFuture<Void> startSessionAsync() {
+        public CompletableFuture<Void> startSessionAsync()
+                                       throws TransportException {
+            if (this.startTransportFailure != null) {
+                throw this.startTransportFailure;
+            }
             if (this.startFailure != null) {
                 throw this.startFailure;
             }
@@ -279,7 +365,11 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         }
 
         @Override
-        public CompletableFuture<Void> finishSessionAsync() {
+        public CompletableFuture<Void> finishSessionAsync()
+                                       throws TransportException {
+            if (this.finishTransportFailure != null) {
+                throw this.finishTransportFailure;
+            }
             if (this.finishFailure != null) {
                 throw this.finishFailure;
             }
@@ -289,7 +379,16 @@ public class QueuedMessageSenderTest extends UnitTestBase {
 
         @Override
         public boolean send(MessageType messageType, int partition,
-                            ByteBuffer buffer) {
+                            ByteBuffer buffer) throws TransportException {
+            if (this.blockDataSend) {
+                this.dataSendCalled.countDown();
+                try {
+                    this.allowDataSend.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new TransportException("Interrupted data send", e);
+                }
+            }
             return true;
         }
 
@@ -311,6 +410,18 @@ public class QueuedMessageSenderTest extends UnitTestBase {
             return this.finishCalled.await(1, TimeUnit.SECONDS);
         }
 
+        public void blockDataSend() {
+            this.blockDataSend = true;
+        }
+
+        public boolean awaitDataSend() throws InterruptedException {
+            return this.dataSendCalled.await(1, TimeUnit.SECONDS);
+        }
+
+        public void allowDataSend() {
+            this.allowDataSend.countDown();
+        }
+
         public void completeStart() {
             this.startFuture.complete(null);
         }
@@ -323,8 +434,16 @@ public class QueuedMessageSenderTest extends UnitTestBase {
             this.startFailure = failure;
         }
 
+        public void failStartWithTransportException(TransportException failure) {
+            this.startTransportFailure = failure;
+        }
+
         public void failFinishWith(RuntimeException failure) {
             this.finishFailure = failure;
+        }
+
+        public void failFinishWithTransportException(TransportException failure) {
+            this.finishTransportFailure = failure;
         }
     }
 }

@@ -30,6 +30,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.apache.hugegraph.computer.algorithm.centrality.pagerank.PageRankParams;
@@ -133,6 +134,23 @@ public class SenderIntegrateTest {
     }
 
     @Test
+    public void testInitializeServiceClosesPartiallyInitializedService() {
+        AtomicBoolean closed = new AtomicBoolean();
+        RuntimeException cause = new IllegalStateException("init failed");
+
+        try {
+            initializeService(new Object(), service -> {
+                throw cause;
+            }, service -> closed.set(true));
+            Assert.fail("Expected initialization to fail");
+        } catch (RuntimeException e) {
+            Assert.assertSame(cause, e);
+        }
+
+        Assert.assertTrue(closed.get());
+    }
+
+    @Test
     public void testCloseServicesAndJoinStopsSpawnedThreads() throws Exception {
         ServiceLifecycle lifecycle = new ServiceLifecycle();
         AtomicBoolean closed = new AtomicBoolean();
@@ -149,10 +167,56 @@ public class SenderIntegrateTest {
         thread.start();
         Assert.assertTrue(started.await(1, TimeUnit.SECONDS));
 
-        closeServicesAndJoin(lifecycle, Arrays.asList(thread));
+        closeServicesAndJoin(lifecycle, Arrays.asList(thread), null);
 
         Assert.assertTrue(closed.get());
         Assert.assertFalse(thread.isAlive());
+    }
+
+    @Test
+    public void testCloseServicesAndJoinStopsWorkersBeforeMaster()
+            throws Exception {
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
+        CountDownLatch workerStarted = new CountDownLatch(1);
+        CountDownLatch workerStopped = new CountDownLatch(1);
+        CountDownLatch masterStarted = new CountDownLatch(1);
+        AtomicBoolean masterInterruptedBeforeWorkerStopped =
+                new AtomicBoolean();
+        Thread workerThread = new Thread(() -> {
+            workerStarted.countDown();
+            try {
+                Thread.sleep(Long.MAX_VALUE);
+            } catch (InterruptedException e) {
+                try {
+                    Thread.sleep(200L);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            } finally {
+                workerStopped.countDown();
+            }
+        });
+        Thread masterThread = new Thread(() -> {
+            masterStarted.countDown();
+            try {
+                workerStopped.await();
+            } catch (InterruptedException e) {
+                masterInterruptedBeforeWorkerStopped.set(
+                        workerStopped.getCount() != 0L);
+                Thread.currentThread().interrupt();
+            }
+        });
+        workerThread.start();
+        masterThread.start();
+        Assert.assertTrue(workerStarted.await(1, TimeUnit.SECONDS));
+        Assert.assertTrue(masterStarted.await(1, TimeUnit.SECONDS));
+
+        closeServicesAndJoin(lifecycle, Arrays.asList(workerThread),
+                             masterThread);
+
+        Assert.assertFalse(masterInterruptedBeforeWorkerStopped.get());
+        Assert.assertFalse(workerThread.isAlive());
+        Assert.assertFalse(masterThread.isAlive());
     }
 
     @Test
@@ -235,8 +299,8 @@ public class SenderIntegrateTest {
         try {
             waitForServices(Arrays.asList(workerFuture, masterFuture));
         } finally {
-            closeServicesAndJoin(lifecycle,
-                                 Arrays.asList(masterThread, workerThread));
+            closeServicesAndJoin(lifecycle, Arrays.asList(workerThread),
+                                 masterThread);
         }
     }
 
@@ -332,9 +396,9 @@ public class SenderIntegrateTest {
         try {
             waitForServices(futures);
         } finally {
-            List<Thread> threads = new ArrayList<>(workers.keySet());
-            threads.add(masterThread);
-            closeServicesAndJoin(lifecycle, threads);
+            closeServicesAndJoin(lifecycle,
+                                 new ArrayList<>(workers.keySet()),
+                                 masterThread);
         }
     }
 
@@ -420,8 +484,8 @@ public class SenderIntegrateTest {
         try {
             waitForServices(Arrays.asList(workerFuture, masterFuture));
         } finally {
-            closeServicesAndJoin(lifecycle,
-                                 Arrays.asList(masterThread, workerThread));
+            closeServicesAndJoin(lifecycle, Arrays.asList(workerThread),
+                                 masterThread);
         }
     }
 
@@ -454,16 +518,31 @@ public class SenderIntegrateTest {
         Config config = ComputerContextUtil.initContext(
                         ComputerContextUtil.convertToMap(args));
         MasterService service = new MasterService();
-        service.init(config);
-        return service;
+        return initializeService(service, s -> s.init(config),
+                                 SenderIntegrateTest::closeMaster);
     }
 
     private WorkerService initWorker(String[] args) {
         Config config = ComputerContextUtil.initContext(
                         ComputerContextUtil.convertToMap(args));
         WorkerService service = new WorkerService();
-        service.init(config);
-        return service;
+        return initializeService(service, s -> s.init(config),
+                                 SenderIntegrateTest::closeWorker);
+    }
+
+    private static <T> T initializeService(T service, Consumer<T> initializer,
+                                           Consumer<T> closer) {
+        try {
+            initializer.accept(service);
+            return service;
+        } catch (RuntimeException | Error e) {
+            try {
+                closer.accept(service);
+            } catch (RuntimeException | Error closeFailure) {
+                e.addSuppressed(closeFailure);
+            }
+            throw e;
+        }
     }
 
     private static void waitForServices(List<CompletableFuture<Void>> futures) {
@@ -499,27 +578,63 @@ public class SenderIntegrateTest {
     }
 
     private static void closeServicesAndJoin(ServiceLifecycle lifecycle,
-                                             List<Thread> threads) {
+                                             List<Thread> workerThreads,
+                                             Thread masterThread) {
         Throwable closeFailure = lifecycle.closeAll();
+        Throwable workerFailure = interruptAndJoinThreads(workerThreads);
+        Throwable masterFailure = null;
+        if (masterThread != null) {
+            masterFailure = interruptAndJoinThreads(
+                            Arrays.asList(masterThread));
+        }
+        if (closeFailure != null) {
+            addFailure(closeFailure, workerFailure);
+            addFailure(closeFailure, masterFailure);
+            throw new ComputerException("Failed to close service", closeFailure);
+        }
+        if (workerFailure != null) {
+            addFailure(workerFailure, masterFailure);
+            throw new ComputerException("Failed to close worker service thread",
+                                        workerFailure);
+        }
+        if (masterFailure != null) {
+            throw new ComputerException("Failed to close master service thread",
+                                        masterFailure);
+        }
+    }
+
+    private static Throwable interruptAndJoinThreads(List<Thread> threads) {
         for (Thread thread : threads) {
             thread.interrupt();
         }
+        Throwable failure = null;
         for (Thread thread : threads) {
             try {
                 thread.join(SERVICE_WAIT_TIMEOUT);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new ComputerException("Interrupted when waiting for " +
-                                            "service thread to stop", e);
+                failure = addFailure(failure, new ComputerException(
+                                     "Interrupted when waiting for service " +
+                                     "thread to stop", e));
             }
             if (thread.isAlive()) {
-                throw new ComputerException("Timed out to wait for service " +
-                                            "thread to stop");
+                failure = addFailure(failure, new ComputerException(
+                                     "Timed out to wait for service thread " +
+                                     "to stop"));
             }
         }
-        if (closeFailure != null) {
-            throw new ComputerException("Failed to close service", closeFailure);
+        return failure;
+    }
+
+    private static Throwable addFailure(Throwable failure, Throwable cause) {
+        if (cause == null) {
+            return failure;
         }
+        if (failure == null) {
+            return cause;
+        }
+        failure.addSuppressed(cause);
+        return failure;
     }
 
     private static void closeWorker(WorkerService service) {
