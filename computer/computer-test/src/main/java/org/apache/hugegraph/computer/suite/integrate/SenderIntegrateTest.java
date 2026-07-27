@@ -92,6 +92,30 @@ public class SenderIntegrateTest {
     }
 
     @Test
+    public void testCleanupFailureDoesNotHideWaitFailure() {
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
+        CompletableFuture<Void> failedWorker = new CompletableFuture<>();
+        IllegalStateException waitFailure =
+                new IllegalStateException("worker failed");
+        IllegalStateException cleanupFailure =
+                new IllegalStateException("worker close failed");
+        failedWorker.completeExceptionally(waitFailure);
+        lifecycle.registerWorker(() -> {
+            throw cleanupFailure;
+        });
+
+        try {
+            waitForServicesAndClose(lifecycle, Arrays.asList(failedWorker),
+                                    new ArrayList<>(), null);
+            Assert.fail("Expected worker failure to be preserved");
+        } catch (ComputerException e) {
+            Assert.assertSame(waitFailure, e.getCause());
+            Assert.assertEquals(1, e.getSuppressed().length);
+            Assert.assertSame(cleanupFailure, e.getSuppressed()[0].getCause());
+        }
+    }
+
+    @Test
     public void testCiTimeoutsAllowHeavyInputStep() {
         Assert.assertEquals(TimeUnit.MINUTES.toMillis(5L), BSP_WAIT_TIMEOUT);
         Assert.assertEquals(BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L),
@@ -171,6 +195,42 @@ public class SenderIntegrateTest {
 
         Assert.assertTrue(closed.get());
         Assert.assertFalse(thread.isAlive());
+    }
+
+    @Test
+    public void testCloseServicesAndJoinUsesOneTimeoutBudget()
+            throws Exception {
+        long timeout = 200L;
+        AtomicBoolean stopping = new AtomicBoolean();
+        CountDownLatch started = new CountDownLatch(3);
+        Thread firstWorker = newInterruptIgnoringThread(stopping, started);
+        Thread secondWorker = newInterruptIgnoringThread(stopping, started);
+        Thread master = newInterruptIgnoringThread(stopping, started);
+        firstWorker.start();
+        secondWorker.start();
+        master.start();
+        Assert.assertTrue(started.await(1, TimeUnit.SECONDS));
+
+        long start = System.nanoTime();
+        try {
+            closeServicesAndJoin(new ServiceLifecycle(),
+                                 Arrays.asList(firstWorker, secondWorker),
+                                 master, timeout);
+            Assert.fail("Expected service threads to time out");
+        } catch (ComputerException ignored) {
+            // The timeout is expected; the assertion below verifies its budget
+        } finally {
+            stopping.set(true);
+            firstWorker.interrupt();
+            secondWorker.interrupt();
+            master.interrupt();
+            firstWorker.join(TimeUnit.SECONDS.toMillis(1L));
+            secondWorker.join(TimeUnit.SECONDS.toMillis(1L));
+            master.join(TimeUnit.SECONDS.toMillis(1L));
+        }
+        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+        Assert.assertTrue("Cleanup exceeded its shared timeout budget: " + elapsed,
+                          elapsed < timeout * 2L);
     }
 
     @Test
@@ -296,12 +356,9 @@ public class SenderIntegrateTest {
         masterThread.start();
         workerThread.start();
 
-        try {
-            waitForServices(Arrays.asList(workerFuture, masterFuture));
-        } finally {
-            closeServicesAndJoin(lifecycle, Arrays.asList(workerThread),
-                                 masterThread);
-        }
+        waitForServicesAndClose(lifecycle,
+                                Arrays.asList(workerFuture, masterFuture),
+                                Arrays.asList(workerThread), masterThread);
     }
 
     @Test
@@ -393,13 +450,9 @@ public class SenderIntegrateTest {
 
         List<CompletableFuture<Void>> futures = new ArrayList<>(workers.values());
         futures.add(masterFuture);
-        try {
-            waitForServices(futures);
-        } finally {
-            closeServicesAndJoin(lifecycle,
-                                 new ArrayList<>(workers.keySet()),
-                                 masterThread);
-        }
+        waitForServicesAndClose(lifecycle, futures,
+                                new ArrayList<>(workers.keySet()),
+                                masterThread);
     }
 
     @Test
@@ -481,12 +534,9 @@ public class SenderIntegrateTest {
         masterThread.start();
         workerThread.start();
 
-        try {
-            waitForServices(Arrays.asList(workerFuture, masterFuture));
-        } finally {
-            closeServicesAndJoin(lifecycle, Arrays.asList(workerThread),
-                                 masterThread);
-        }
+        waitForServicesAndClose(lifecycle,
+                                Arrays.asList(workerFuture, masterFuture),
+                                Arrays.asList(workerThread), masterThread);
     }
 
     private void slowSendFunc(WorkerService service, int port) throws TransportException {
@@ -577,15 +627,44 @@ public class SenderIntegrateTest {
         }
     }
 
+    private static void waitForServicesAndClose(
+            ServiceLifecycle lifecycle, List<CompletableFuture<Void>> futures,
+            List<Thread> workerThreads, Thread masterThread) {
+        try {
+            waitForServices(futures);
+        } catch (RuntimeException | Error e) {
+            try {
+                closeServicesAndJoin(lifecycle, workerThreads, masterThread);
+            } catch (RuntimeException | Error closeFailure) {
+                e.addSuppressed(closeFailure);
+            }
+            throw e;
+        }
+        closeServicesAndJoin(lifecycle, workerThreads, masterThread);
+    }
+
     private static void closeServicesAndJoin(ServiceLifecycle lifecycle,
                                              List<Thread> workerThreads,
                                              Thread masterThread) {
+        closeServicesAndJoin(lifecycle, workerThreads, masterThread,
+                             SERVICE_WAIT_TIMEOUT);
+    }
+
+    private static void closeServicesAndJoin(ServiceLifecycle lifecycle,
+                                             List<Thread> workerThreads,
+                                             Thread masterThread,
+                                             long timeout) {
+        long deadline = System.nanoTime() +
+                        TimeUnit.MILLISECONDS.toNanos(timeout);
         Throwable closeFailure = lifecycle.closeAll();
-        Throwable workerFailure = interruptAndJoinThreads(workerThreads);
+        Throwable workerFailure = interruptAndJoinThreads(
+                                  workerThreads,
+                                  remainingTimeout(deadline));
         Throwable masterFailure = null;
         if (masterThread != null) {
             masterFailure = interruptAndJoinThreads(
-                            Arrays.asList(masterThread));
+                            Arrays.asList(masterThread),
+                            remainingTimeout(deadline));
         }
         if (closeFailure != null) {
             addFailure(closeFailure, workerFailure);
@@ -603,19 +682,25 @@ public class SenderIntegrateTest {
         }
     }
 
-    private static Throwable interruptAndJoinThreads(List<Thread> threads) {
+    private static Throwable interruptAndJoinThreads(List<Thread> threads,
+                                                     long timeout) {
+        long deadline = System.nanoTime() +
+                        TimeUnit.MILLISECONDS.toNanos(timeout);
         for (Thread thread : threads) {
             thread.interrupt();
         }
         Throwable failure = null;
         for (Thread thread : threads) {
-            try {
-                thread.join(SERVICE_WAIT_TIMEOUT);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                failure = addFailure(failure, new ComputerException(
-                                     "Interrupted when waiting for service " +
-                                     "thread to stop", e));
+            long remaining = remainingTimeout(deadline);
+            if (remaining > 0L) {
+                try {
+                    thread.join(remaining);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    failure = addFailure(failure, new ComputerException(
+                                    "Interrupted when waiting for service " +
+                                    "thread to stop", e));
+                }
             }
             if (thread.isAlive()) {
                 failure = addFailure(failure, new ComputerException(
@@ -624,6 +709,28 @@ public class SenderIntegrateTest {
             }
         }
         return failure;
+    }
+
+    private static Thread newInterruptIgnoringThread(AtomicBoolean stopping,
+                                                      CountDownLatch started) {
+        Thread thread = new Thread(() -> {
+            started.countDown();
+            while (!stopping.get()) {
+                try {
+                    Thread.sleep(Long.MAX_VALUE);
+                } catch (InterruptedException ignored) {
+                    // Keep waiting until the test explicitly stops this thread
+                }
+            }
+        });
+        thread.setDaemon(true);
+        return thread;
+    }
+
+    private static long remainingTimeout(long deadline) {
+        long remaining = deadline - System.nanoTime();
+        return remaining <= 0L ? 0L :
+               TimeUnit.NANOSECONDS.toMillis(remaining) + 1L;
     }
 
     private static Throwable addFailure(Throwable failure, Throwable cause) {
