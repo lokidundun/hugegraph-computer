@@ -142,11 +142,19 @@ public class QueuedMessageSender implements MessageSender {
                             ++emptyQueueCount;
                             continue;
                         }
-                        if (channel.doSend(message)) {
-                            // Only consume the message after it is sent
+                        try {
+                            if (channel.doSend(message)) {
+                                // Only consume the message after it is sent
+                                channel.queue.take();
+                            } else {
+                                ++busyClientCount;
+                            }
+                        } catch (TransportException | RuntimeException e) {
+                            channel.failControlFuture(e);
+                            // Discard the failed data message to keep sending
                             channel.queue.take();
-                        } else {
-                            ++busyClientCount;
+                            LOG.warn("Failed to send {} message to {}, " +
+                                     "discard it", message.type(), channel, e);
                         }
                     }
                     int channelCount = channels.length;
@@ -177,9 +185,6 @@ public class QueuedMessageSender implements MessageSender {
                                   "Interrupted when waiting for message " +
                                   "queue not empty");
                     }
-                } catch (TransportException e) {
-                    // TODO: should handle this in main workflow thread
-                    throw new ComputerException("Failed to send message", e);
                 }
             }
             LOG.info("The send-executor is terminated");
@@ -297,6 +302,10 @@ public class QueuedMessageSender implements MessageSender {
         }
 
         public void transportExceptionCaught(TransportException cause) {
+            this.failControlFuture(cause);
+        }
+
+        public void failControlFuture(Throwable cause) {
             CompletableFuture<Void> future = this.controlFutureRef.getAndSet(null);
             if (future != null) {
                 future.completeExceptionally(cause);

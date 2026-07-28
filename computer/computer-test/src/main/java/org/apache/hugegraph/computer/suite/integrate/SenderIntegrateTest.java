@@ -65,6 +65,8 @@ public class SenderIntegrateTest {
     private static final long BSP_WAIT_TIMEOUT = TimeUnit.MINUTES.toMillis(5L);
     private static final long SERVICE_WAIT_TIMEOUT =
             BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L);
+    private static final long TEST_THREAD_JOIN_TIMEOUT =
+            TimeUnit.SECONDS.toMillis(5L);
 
     @BeforeClass
     public static void init() {
@@ -188,13 +190,19 @@ public class SenderIntegrateTest {
             }
         });
         lifecycle.registerWorker(() -> closed.set(true));
-        thread.start();
-        Assert.assertTrue(started.await(1, TimeUnit.SECONDS));
+        try {
+            thread.start();
+            Assert.assertTrue(started.await(1, TimeUnit.SECONDS));
 
-        closeServicesAndJoin(lifecycle, Arrays.asList(thread), null);
+            closeServicesAndJoin(lifecycle, Arrays.asList(thread), null);
 
-        Assert.assertTrue(closed.get());
-        Assert.assertFalse(thread.isAlive());
+            Assert.assertTrue(closed.get());
+            Assert.assertFalse(thread.isAlive());
+        } finally {
+            lifecycle.closeAll();
+            interruptAndJoinThreads(Arrays.asList(thread),
+                                    TEST_THREAD_JOIN_TIMEOUT);
+        }
     }
 
     @Test
@@ -266,17 +274,23 @@ public class SenderIntegrateTest {
                 Thread.currentThread().interrupt();
             }
         });
-        workerThread.start();
-        masterThread.start();
-        Assert.assertTrue(workerStarted.await(1, TimeUnit.SECONDS));
-        Assert.assertTrue(masterStarted.await(1, TimeUnit.SECONDS));
+        try {
+            workerThread.start();
+            masterThread.start();
+            Assert.assertTrue(workerStarted.await(1, TimeUnit.SECONDS));
+            Assert.assertTrue(masterStarted.await(1, TimeUnit.SECONDS));
 
-        closeServicesAndJoin(lifecycle, Arrays.asList(workerThread),
-                             masterThread);
+            closeServicesAndJoin(lifecycle, Arrays.asList(workerThread),
+                                 masterThread);
 
-        Assert.assertFalse(masterInterruptedBeforeWorkerStopped.get());
-        Assert.assertFalse(workerThread.isAlive());
-        Assert.assertFalse(masterThread.isAlive());
+            Assert.assertFalse(masterInterruptedBeforeWorkerStopped.get());
+            Assert.assertFalse(workerThread.isAlive());
+            Assert.assertFalse(masterThread.isAlive());
+        } finally {
+            lifecycle.closeAll();
+            interruptAndJoinThreads(Arrays.asList(workerThread, masterThread),
+                                    TEST_THREAD_JOIN_TIMEOUT);
+        }
     }
 
     @Test

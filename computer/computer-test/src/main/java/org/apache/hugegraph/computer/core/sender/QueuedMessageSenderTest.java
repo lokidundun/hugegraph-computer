@@ -270,6 +270,20 @@ public class QueuedMessageSenderTest extends UnitTestBase {
     }
 
     @Test
+    public void testSynchronousDataTransportFailureCompletesQueuedFinish()
+            throws Exception {
+        this.assertSynchronousDataFailureCompletesQueuedFinish(
+                new TransportException("data send failed"));
+    }
+
+    @Test
+    public void testSynchronousDataRuntimeFailureCompletesQueuedFinish()
+            throws Exception {
+        this.assertSynchronousDataFailureCompletesQueuedFinish(
+                new IllegalStateException("data send failed"));
+    }
+
+    @Test
     public void testControlFutureConflictKeepsSendExecutorAlive()
             throws Exception {
         QueuedMessageSender sender = new QueuedMessageSender(this.config);
@@ -317,6 +331,38 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         }
     }
 
+    private void assertSynchronousDataFailureCompletesQueuedFinish(
+            Throwable cause) throws Exception {
+        QueuedMessageSender sender = new QueuedMessageSender(this.config);
+        ControlFutureClient failedClient = new ControlFutureClient();
+        ControlFutureClient activeClient = new ControlFutureClient();
+        sender.addWorkerClient(1, failedClient);
+        sender.addWorkerClient(2, activeClient);
+        sender.init();
+
+        failedClient.blockDataSend();
+        try {
+            sender.send(1, new QueuedMessage(0, MessageType.MSG,
+                                              ByteBuffer.allocate(1)));
+            Assert.assertTrue(failedClient.awaitDataSend());
+
+            CompletableFuture<Void> finishFuture = sender.send(1,
+                                                                 MessageType.FINISH);
+            failedClient.failDataWith(cause);
+            failedClient.allowDataSend();
+            assertFutureFailedWith(finishFuture, cause);
+
+            CompletableFuture<Void> activeStart = sender.send(2,
+                                                               MessageType.START);
+            Assert.assertTrue(activeClient.awaitStart());
+            activeClient.completeStart();
+            activeStart.get(1, TimeUnit.SECONDS);
+        } finally {
+            failedClient.allowDataSend();
+            sender.close();
+        }
+    }
+
     private static void assertFutureFailedWithMessage(CompletableFuture<Void> future,
                                                        String message)
             throws InterruptedException, TimeoutException {
@@ -340,6 +386,7 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         private RuntimeException finishFailure;
         private TransportException startTransportFailure;
         private TransportException finishTransportFailure;
+        private Throwable dataFailure;
         private boolean blockDataSend;
 
         public ControlFutureClient() {
@@ -388,6 +435,12 @@ public class QueuedMessageSenderTest extends UnitTestBase {
                     Thread.currentThread().interrupt();
                     throw new TransportException("Interrupted data send", e);
                 }
+            }
+            if (this.dataFailure instanceof TransportException) {
+                throw (TransportException) this.dataFailure;
+            }
+            if (this.dataFailure instanceof RuntimeException) {
+                throw (RuntimeException) this.dataFailure;
             }
             return true;
         }
@@ -444,6 +497,10 @@ public class QueuedMessageSenderTest extends UnitTestBase {
 
         public void failFinishWithTransportException(TransportException failure) {
             this.finishTransportFailure = failure;
+        }
+
+        public void failDataWith(Throwable failure) {
+            this.dataFailure = failure;
         }
     }
 }
