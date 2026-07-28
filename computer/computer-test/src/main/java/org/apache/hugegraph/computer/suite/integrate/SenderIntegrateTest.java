@@ -118,6 +118,29 @@ public class SenderIntegrateTest {
     }
 
     @Test
+    public void testMasterErrorCompletesServiceFuture() throws Exception {
+        CompletableFuture<Void> masterFuture = new CompletableFuture<>();
+        Error cause = new AssertionError("master failed");
+        Thread masterThread = new Thread(() -> this.executeMasterTask(
+                masterFuture, () -> {
+                    throw cause;
+                }));
+        masterThread.start();
+
+        try {
+            masterFuture.get(1, TimeUnit.SECONDS);
+            Assert.fail("Expected master error to fail the service future");
+        } catch (ExecutionException e) {
+            Assert.assertSame(cause, e.getCause());
+        } catch (TimeoutException e) {
+            Assert.fail("Timed out to wait for master error");
+        } finally {
+            interruptAndJoinThreads(Arrays.asList(masterThread),
+                                    TEST_THREAD_JOIN_TIMEOUT);
+        }
+    }
+
+    @Test
     public void testCiTimeoutsAllowHeavyInputStep() {
         Assert.assertEquals(TimeUnit.MINUTES.toMillis(5L), BSP_WAIT_TIMEOUT);
         Assert.assertEquals(BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L),
@@ -314,7 +337,7 @@ public class SenderIntegrateTest {
                                           .withRpcServerPort(8611)
                                           .withRpcServerPort(0)
                                           .build();
-            try {
+            this.executeMasterTask(masterFuture, () -> {
                 MasterService service = initMaster(args);
                 try {
                     if (!lifecycle.registerMaster(service::close)) {
@@ -326,10 +349,7 @@ public class SenderIntegrateTest {
                 } finally {
                     closeMaster(service);
                 }
-            } catch (Exception e) {
-                LOG.error("Failed to execute master service", e);
-                masterFuture.completeExceptionally(e);
-            }
+            });
         });
         masterThread.setDaemon(true);
 
@@ -576,6 +596,16 @@ public class SenderIntegrateTest {
             return sendFuncBak.apply(message);
         };
         Whitebox.setInternalState(clientSession, "sendFunction", sendFunc);
+    }
+
+    private void executeMasterTask(CompletableFuture<Void> future,
+                                   Runnable task) {
+        try {
+            task.run();
+        } catch (Throwable e) {
+            LOG.error("Failed to execute master service", e);
+            future.completeExceptionally(e);
+        }
     }
 
     private MasterService initMaster(String[] args) {
