@@ -27,6 +27,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -138,6 +139,100 @@ public class SenderIntegrateTest {
             interruptAndJoinThreads(Arrays.asList(master.thread),
                                     TEST_THREAD_JOIN_TIMEOUT);
         }
+    }
+
+    @Test
+    public void testServiceTaskPreservesExecutionFailure() throws Exception {
+        RuntimeException executeFailure =
+                new IllegalStateException("service execution failed");
+        RuntimeException closeFailure =
+                new IllegalStateException("service close failed");
+        ServiceTask task = newServiceTask(
+                           Object::new, closer -> true,
+                           service -> {
+                               throw executeFailure;
+                           }, service -> {
+                               throw closeFailure;
+                           });
+        task.thread.start();
+
+        try {
+            task.future.get(1, TimeUnit.SECONDS);
+            Assert.fail("Expected service task to fail");
+        } catch (ExecutionException e) {
+            Assert.assertSame(executeFailure, e.getCause());
+            Assert.assertArrayEquals(new Throwable[]{closeFailure},
+                                     e.getCause().getSuppressed());
+        } finally {
+            interruptAndJoinThreads(Arrays.asList(task.thread),
+                                    TEST_THREAD_JOIN_TIMEOUT);
+        }
+    }
+
+    @Test
+    public void testServiceCleanupFailureFailsTaskWithoutDoubleClose()
+            throws Exception {
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
+        AtomicInteger closeCount = new AtomicInteger();
+        CountDownLatch executeStarted = new CountDownLatch(1);
+        CountDownLatch allowExecuteReturn = new CountDownLatch(1);
+        CountDownLatch closeStarted = new CountDownLatch(1);
+        CountDownLatch allowCloseReturn = new CountDownLatch(1);
+        RuntimeException cause =
+                new IllegalStateException("service close failed");
+        ServiceTask task = newServiceTask(
+                           Object::new, lifecycle::registerWorker,
+                           service -> {
+                               executeStarted.countDown();
+                               allowExecuteReturn.await();
+                           }, service -> {
+                               closeCount.incrementAndGet();
+                               closeStarted.countDown();
+                               try {
+                                   allowCloseReturn.await();
+                               } catch (InterruptedException e) {
+                                   Thread.currentThread().interrupt();
+                                   throw new AssertionError(e);
+                               }
+                               throw cause;
+                           });
+        CompletableFuture<Throwable> lifecycleResult =
+                new CompletableFuture<>();
+        Thread lifecycleThread = new Thread(
+                () -> lifecycleResult.complete(lifecycle.closeAll()));
+        task.thread.start();
+
+        Throwable taskFailure = null;
+        try {
+            Assert.assertTrue(executeStarted.await(1, TimeUnit.SECONDS));
+            lifecycleThread.start();
+            Assert.assertTrue(closeStarted.await(1, TimeUnit.SECONDS));
+            allowExecuteReturn.countDown();
+            task.thread.join(TimeUnit.SECONDS.toMillis(1L));
+            Assert.assertFalse("Service future completed before cleanup",
+                               task.future.isDone());
+
+            allowCloseReturn.countDown();
+            try {
+                task.future.get(1, TimeUnit.SECONDS);
+            } catch (ExecutionException e) {
+                taskFailure = e.getCause();
+            }
+            task.thread.join(TEST_THREAD_JOIN_TIMEOUT);
+            lifecycleThread.join(TEST_THREAD_JOIN_TIMEOUT);
+            Assert.assertSame(cause, lifecycleResult.get(
+                    1, TimeUnit.SECONDS));
+        } finally {
+            allowExecuteReturn.countDown();
+            allowCloseReturn.countDown();
+            lifecycle.closeAll();
+            interruptAndJoinThreads(Arrays.asList(task.thread,
+                                                  lifecycleThread),
+                                    TEST_THREAD_JOIN_TIMEOUT);
+        }
+
+        Assert.assertSame(cause, taskFailure);
+        Assert.assertEquals(1, closeCount.get());
     }
 
     @Test
@@ -435,16 +530,52 @@ public class SenderIntegrateTest {
         Thread thread = new Thread(() -> {
             try {
                 T service = initializer.get();
+                Runnable closeService = new Runnable() {
+
+                    private boolean closed;
+                    private Throwable failure;
+
+                    @Override
+                    public synchronized void run() {
+                        if (!this.closed) {
+                            this.closed = true;
+                            try {
+                                closer.accept(service);
+                            } catch (RuntimeException | Error e) {
+                                this.failure = e;
+                            }
+                        }
+                        if (this.failure instanceof RuntimeException) {
+                            throw (RuntimeException) this.failure;
+                        }
+                        if (this.failure != null) {
+                            throw (Error) this.failure;
+                        }
+                    }
+                };
+                Throwable failure = null;
                 try {
-                    if (!registrar.apply(() -> closer.accept(service))) {
+                    if (!registrar.apply(closeService)) {
                         future.cancel(false);
                         return;
                     }
                     executor.execute(service);
-                    future.complete(null);
+                } catch (Throwable e) {
+                    failure = e;
+                    throw e;
                 } finally {
-                    closer.accept(service);
+                    try {
+                        closeService.run();
+                    } catch (Throwable closeFailure) {
+                        if (failure == null) {
+                            throw closeFailure;
+                        }
+                        if (closeFailure != failure) {
+                            failure.addSuppressed(closeFailure);
+                        }
+                    }
                 }
+                future.complete(null);
             } catch (Throwable e) {
                 LOG.error("Failed to execute service", e);
                 future.completeExceptionally(e);

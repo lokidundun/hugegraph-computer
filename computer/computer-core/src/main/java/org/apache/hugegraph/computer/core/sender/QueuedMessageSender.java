@@ -351,6 +351,9 @@ public class QueuedMessageSender implements MessageSender {
         private void completeControlFuture(CompletableFuture<Void> future,
                                            Throwable cause) {
             if (!this.controlFutureRef.compareAndSet(future, null)) {
+                if (cause != null) {
+                    this.failDataSend(cause);
+                }
                 return;
             }
             if (cause == null) {

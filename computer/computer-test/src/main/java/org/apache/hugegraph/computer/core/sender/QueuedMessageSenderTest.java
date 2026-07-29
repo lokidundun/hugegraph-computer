@@ -24,6 +24,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hugegraph.computer.core.common.exception.TransportException;
 import org.apache.hugegraph.computer.core.config.ComputerOptions;
@@ -145,6 +146,65 @@ public class QueuedMessageSenderTest extends UnitTestBase {
             client.finishFuture.complete(null);
             finishFuture.get(1, TimeUnit.SECONDS);
         } finally {
+            sender.close();
+        }
+    }
+
+    @Test
+    public void testExceptionalCompletionCasLossFailsNextControl()
+            throws Exception {
+        ControlFutureClient client = new ControlFutureClient();
+        QueuedMessageSender sender = this.newSender(
+                                     client, new MockTransportClient());
+        CountDownLatch failureObserved = new CountDownLatch(1);
+        CountDownLatch resumeFailure = new CountDownLatch(1);
+        Thread failureThread = null;
+
+        try {
+            CompletableFuture<Void> startFuture = sender.send(
+                    1, MessageType.START);
+            Assert.assertTrue(await(client.startCalled));
+
+            Object[] channels = Whitebox.getInternalState(sender, "channels");
+            Object channel = channels[0];
+            AtomicReference<CompletableFuture<Void>> controlFutureRef =
+                    Whitebox.getInternalState(channel, "controlFutureRef");
+            AtomicReference<CompletableFuture<Void>> observedFuture =
+                    new AtomicReference<>();
+            TransportException cause =
+                    new TransportException("connection failed");
+            failureThread = new Thread(() -> {
+                observedFuture.set(controlFutureRef.get());
+                failureObserved.countDown();
+                try {
+                    resumeFailure.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+                Whitebox.invoke(channel.getClass(), new Class<?>[] {
+                                        CompletableFuture.class,
+                                        Throwable.class},
+                                "completeControlFuture", channel,
+                                observedFuture.get(), cause);
+            });
+            failureThread.start();
+            Assert.assertTrue(await(failureObserved));
+
+            client.startFuture.complete(null);
+            startFuture.get(1, TimeUnit.SECONDS);
+            CompletableFuture<Void> finishFuture = sender.send(
+                    1, MessageType.FINISH);
+            Assert.assertTrue(await(client.finishCalled));
+
+            resumeFailure.countDown();
+            assertFutureFailedWith(finishFuture, cause);
+            client.finishFuture.complete(null);
+        } finally {
+            resumeFailure.countDown();
+            if (failureThread != null) {
+                failureThread.join(TimeUnit.SECONDS.toMillis(1L));
+            }
             sender.close();
         }
     }
