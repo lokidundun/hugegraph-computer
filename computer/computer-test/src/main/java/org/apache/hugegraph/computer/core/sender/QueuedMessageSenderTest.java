@@ -239,12 +239,14 @@ public class QueuedMessageSenderTest extends UnitTestBase {
 
     @Test
     public void testQueuedFinish() throws Exception {
-        this.assertSynchronousDataFailureCompletesQueuedFinish(new TransportException("data send failed"));
+        this.assertSynchronousDataFailureCompletesQueuedFinish(
+                new TransportException("data send failed"));
     }
 
     @Test
     public void testCompletesQueuedFinish() throws Exception {
-        this.assertSynchronousDataFailureCompletesQueuedFinish(new IllegalStateException("data send failed"));
+        this.assertSynchronousDataFailureCompletesQueuedFinish(
+                new IllegalStateException("data send failed"));
     }
 
     @Test
@@ -301,7 +303,8 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         return latch.await(1, TimeUnit.SECONDS);
     }
 
-    private void assertSynchronousDataFailureCompletesQueuedFinish(Throwable cause) throws Exception {
+    private void assertSynchronousDataFailureCompletesQueuedFinish(
+            Throwable cause) throws Exception {
         ControlFutureClient failedClient = new ControlFutureClient();
         ControlFutureClient activeClient = new ControlFutureClient();
         QueuedMessageSender sender = this.newSender(failedClient, activeClient);

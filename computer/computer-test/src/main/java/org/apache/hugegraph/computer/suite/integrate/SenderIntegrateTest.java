@@ -61,7 +61,8 @@ public class SenderIntegrateTest {
 
     private static final Class<?> COMPUTATION = MockComputation.class;
     private static final long BSP_WAIT_TIMEOUT = TimeUnit.MINUTES.toMillis(5L);
-    private static final long SERVICE_WAIT_TIMEOUT = BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L);
+    private static final long SERVICE_WAIT_TIMEOUT =
+            BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L);
     private static final long TEST_THREAD_JOIN_TIMEOUT = TimeUnit.SECONDS.toMillis(5L);
 
     @BeforeClass
