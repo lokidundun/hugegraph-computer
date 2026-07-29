@@ -150,7 +150,7 @@ public class QueuedMessageSender implements MessageSender {
                                 ++busyClientCount;
                             }
                         } catch (TransportException | RuntimeException e) {
-                            channel.failControlFuture(e);
+                            channel.failDataSend(e);
                             // Discard the failed data message to keep sending
                             channel.queue.take();
                             LOG.warn("Failed to send {} message to {}, " +
@@ -238,6 +238,7 @@ public class QueuedMessageSender implements MessageSender {
         // Each target worker has a TransportClient
         private final TransportClient client;
         private final AtomicReference<CompletableFuture<Void>> controlFutureRef;
+        private final AtomicReference<Throwable> dataFailureRef;
 
         public WorkerChannel(int workerId, MessageQueue queue,
                              TransportClient client) {
@@ -245,6 +246,7 @@ public class QueuedMessageSender implements MessageSender {
             this.queue = queue;
             this.client = client;
             this.controlFutureRef = new AtomicReference<>();
+            this.dataFailureRef = new AtomicReference<>();
         }
 
         public boolean doSend(QueuedMessage message)
@@ -302,7 +304,12 @@ public class QueuedMessageSender implements MessageSender {
         }
 
         public void transportExceptionCaught(TransportException cause) {
-            this.failControlFuture(cause);
+            CompletableFuture<Void> future = this.controlFutureRef.get();
+            if (future == null) {
+                this.failDataSend(cause);
+            } else {
+                this.completeControlFuture(future, cause);
+            }
         }
 
         public void failControlFuture(Throwable cause) {
@@ -312,9 +319,24 @@ public class QueuedMessageSender implements MessageSender {
             }
         }
 
+        public void failDataSend(Throwable cause) {
+            this.dataFailureRef.compareAndSet(null, cause);
+            this.failControlFuture(this.dataFailureRef.get());
+        }
+
         private boolean setControlFuture(CompletableFuture<Void> future) {
+            Throwable failure = this.dataFailureRef.get();
+            if (failure != null) {
+                future.completeExceptionally(failure);
+                return false;
+            }
             if (this.controlFutureRef.compareAndSet(null, future)) {
-                return true;
+                failure = this.dataFailureRef.get();
+                if (failure == null) {
+                    return true;
+                }
+                this.completeControlFuture(future, failure);
+                return false;
             }
             ComputerException e = new ComputerException(
                                   "The origin future must be null");

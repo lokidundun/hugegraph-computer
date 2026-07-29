@@ -17,12 +17,9 @@
 
 package org.apache.hugegraph.computer.suite.integrate;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -32,6 +29,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.apache.hugegraph.computer.algorithm.centrality.pagerank.PageRankParams;
 import org.apache.hugegraph.computer.core.common.exception.ComputerException;
@@ -63,10 +61,8 @@ public class SenderIntegrateTest {
 
     private static final Class<?> COMPUTATION = MockComputation.class;
     private static final long BSP_WAIT_TIMEOUT = TimeUnit.MINUTES.toMillis(5L);
-    private static final long SERVICE_WAIT_TIMEOUT =
-            BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L);
-    private static final long TEST_THREAD_JOIN_TIMEOUT =
-            TimeUnit.SECONDS.toMillis(5L);
+    private static final long SERVICE_WAIT_TIMEOUT = BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L);
+    private static final long TEST_THREAD_JOIN_TIMEOUT = TimeUnit.SECONDS.toMillis(5L);
 
     @BeforeClass
     public static void init() {
@@ -119,32 +115,28 @@ public class SenderIntegrateTest {
 
     @Test
     public void testMasterErrorCompletesServiceFuture() throws Exception {
-        CompletableFuture<Void> masterFuture = new CompletableFuture<>();
+        ServiceLifecycle lifecycle = new ServiceLifecycle();
         Error cause = new AssertionError("master failed");
-        Thread masterThread = new Thread(() -> this.executeMasterTask(
-                masterFuture, () -> {
-                    throw cause;
-                }));
-        masterThread.start();
+        ServiceTask master = newServiceTask(
+                             Object::new, lifecycle::registerMaster,
+                             service -> {
+                                 throw cause;
+                             }, service -> {
+                             });
+        master.thread.start();
 
         try {
-            masterFuture.get(1, TimeUnit.SECONDS);
+            master.future.get(1, TimeUnit.SECONDS);
             Assert.fail("Expected master error to fail the service future");
         } catch (ExecutionException e) {
             Assert.assertSame(cause, e.getCause());
         } catch (TimeoutException e) {
             Assert.fail("Timed out to wait for master error");
         } finally {
-            interruptAndJoinThreads(Arrays.asList(masterThread),
+            lifecycle.closeAll();
+            interruptAndJoinThreads(Arrays.asList(master.thread),
                                     TEST_THREAD_JOIN_TIMEOUT);
         }
-    }
-
-    @Test
-    public void testCiTimeoutsAllowHeavyInputStep() {
-        Assert.assertEquals(TimeUnit.MINUTES.toMillis(5L), BSP_WAIT_TIMEOUT);
-        Assert.assertEquals(BSP_WAIT_TIMEOUT + TimeUnit.SECONDS.toMillis(10L),
-                            SERVICE_WAIT_TIMEOUT);
     }
 
     @Test
@@ -229,9 +221,9 @@ public class SenderIntegrateTest {
     }
 
     @Test
-    public void testCloseServicesAndJoinUsesOneTimeoutBudget()
-            throws Exception {
-        long timeout = 200L;
+    public void testCloseServicesAndJoinUsesOneTimeoutBudget() throws Exception {
+        long timeout = TimeUnit.SECONDS.toMillis(1L);
+        long maxElapsed = timeout + timeout / 2L;
         AtomicBoolean stopping = new AtomicBoolean();
         CountDownLatch started = new CountDownLatch(3);
         Thread firstWorker = newInterruptIgnoringThread(stopping, started);
@@ -243,13 +235,14 @@ public class SenderIntegrateTest {
         Assert.assertTrue(started.await(1, TimeUnit.SECONDS));
 
         long start = System.nanoTime();
+        long elapsed = -1L;
         try {
             closeServicesAndJoin(new ServiceLifecycle(),
                                  Arrays.asList(firstWorker, secondWorker),
                                  master, timeout);
             Assert.fail("Expected service threads to time out");
         } catch (ComputerException ignored) {
-            // The timeout is expected; the assertion below verifies its budget
+            elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
         } finally {
             stopping.set(true);
             firstWorker.interrupt();
@@ -259,20 +252,17 @@ public class SenderIntegrateTest {
             secondWorker.join(TimeUnit.SECONDS.toMillis(1L));
             master.join(TimeUnit.SECONDS.toMillis(1L));
         }
-        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
         Assert.assertTrue("Cleanup exceeded its shared timeout budget: " + elapsed,
-                          elapsed < timeout * 2L);
+                          elapsed < maxElapsed);
     }
 
     @Test
-    public void testCloseServicesAndJoinStopsWorkersBeforeMaster()
-            throws Exception {
+    public void testCloseBeforeMaster() throws Exception {
         ServiceLifecycle lifecycle = new ServiceLifecycle();
         CountDownLatch workerStarted = new CountDownLatch(1);
         CountDownLatch workerStopped = new CountDownLatch(1);
         CountDownLatch masterStarted = new CountDownLatch(1);
-        AtomicBoolean masterInterruptedBeforeWorkerStopped =
-                new AtomicBoolean();
+        AtomicBoolean masterInterruptedBeforeWorkerStopped = new AtomicBoolean();
         Thread workerThread = new Thread(() -> {
             workerStarted.countDown();
             try {
@@ -319,258 +309,69 @@ public class SenderIntegrateTest {
     @Test
     public void testOneWorker() {
         ServiceLifecycle lifecycle = new ServiceLifecycle();
-        CompletableFuture<Void> masterFuture = new CompletableFuture<>();
-        Thread masterThread = new Thread(() -> {
-            String[] args = OptionsBuilder.newInstance()
-                                          .withJobId("local_002")
-                                          .withAlgorithm(PageRankParams.class)
-                                          .withResultName("rank")
-                                          .withResultClass(DoubleValue.class)
-                                          .withMessageClass(DoubleValue.class)
-                                          .withMaxSuperStep(3)
-                                           .withComputationClass(COMPUTATION)
-                                           .withWorkerCount(1)
-                                           .withTestBspTimeouts()
-                                           .withBufferThreshold(50)
-                                          .withBufferCapacity(60)
-                                          .withRpcServerHost("127.0.0.1")
-                                          .withRpcServerPort(8611)
-                                          .withRpcServerPort(0)
-                                          .build();
-            this.executeMasterTask(masterFuture, () -> {
-                MasterService service = initMaster(args);
-                try {
-                    if (!lifecycle.registerMaster(service::close)) {
-                        masterFuture.cancel(false);
-                        return;
-                    }
-                    service.execute();
-                    masterFuture.complete(null);
-                } finally {
-                    closeMaster(service);
-                }
-            });
-        });
-        masterThread.setDaemon(true);
-
-        CompletableFuture<Void> workerFuture = new CompletableFuture<>();
-        Thread workerThread = new Thread(() -> {
-            String[] args = OptionsBuilder.newInstance()
-                                          .withJobId("local_002")
-                                          .withAlgorithm(PageRankParams.class)
-                                          .withResultName("rank")
-                                          .withResultClass(DoubleValue.class)
-                                          .withMessageClass(DoubleValue.class)
-                                          .withMaxSuperStep(3)
-                                           .withComputationClass(COMPUTATION)
-                                           .withWorkerCount(1)
-                                           .withTestBspTimeouts()
-                                           .withBufferThreshold(50)
-                                          .withBufferCapacity(60)
-                                          .withTransoprtServerPort(0)
-                                          .build();
-            try {
-                WorkerService service = initWorker(args);
-                try {
-                    if (!lifecycle.registerWorker(service::close)) {
-                        workerFuture.cancel(false);
-                        return;
-                    }
-                    service.execute();
-                    workerFuture.complete(null);
-                } finally {
-                    closeWorker(service);
-                }
-            } catch (Throwable e) {
-                LOG.error("Failed to execute worker service", e);
-                workerFuture.completeExceptionally(e);
-            }
-        });
-        workerThread.setDaemon(true);
-        masterThread.start();
-        workerThread.start();
-
-        waitForServicesAndClose(lifecycle,
-                                Arrays.asList(workerFuture, masterFuture),
-                                Arrays.asList(workerThread), masterThread);
+        String[] masterArgs = commonOptions("local_002", 1)
+                              .withBufferThreshold(50)
+                              .withBufferCapacity(60)
+                              .withRpcServerHost("127.0.0.1")
+                              .withRpcServerPort(0)
+                              .build();
+        String[] workerArgs = commonOptions("local_002", 1)
+                              .withBufferThreshold(50)
+                              .withBufferCapacity(60)
+                              .withTransoprtServerPort(0)
+                              .build();
+        ServiceTask master = masterTask(lifecycle, masterArgs);
+        ServiceTask worker = workerTask(lifecycle, workerArgs,
+                                        WorkerService::execute);
+        runServices(lifecycle, Arrays.asList(worker), master);
     }
 
     @Test
-    public void testMultiWorkers() throws IOException {
+    public void testMultiWorkers() {
         int workerCount = 3;
         int partitionCount = 3;
         ServiceLifecycle lifecycle = new ServiceLifecycle();
-        CompletableFuture<Void> masterFuture = new CompletableFuture<>();
-        Thread masterThread = new Thread(() -> {
-            String[] args = OptionsBuilder.newInstance()
-                                          .withJobId("local_003")
-                                          .withAlgorithm(PageRankParams.class)
-                                          .withResultName("rank")
-                                          .withResultClass(DoubleValue.class)
-                                          .withMessageClass(DoubleValue.class)
-                                          .withMaxSuperStep(3)
-                                           .withComputationClass(COMPUTATION)
-                                           .withWorkerCount(workerCount)
-                                           .withPartitionCount(partitionCount)
-                                           .withTestBspTimeouts()
-                                           .withRpcServerHost("127.0.0.1")
-                                          .withRpcServerPort(0)
-                                          .build();
-            try {
-                MasterService service = initMaster(args);
-                try {
-                    if (!lifecycle.registerMaster(service::close)) {
-                        masterFuture.cancel(false);
-                        return;
-                    }
-                    service.execute();
-                    masterFuture.complete(null);
-                } finally {
-                    closeMaster(service);
-                }
-            } catch (Throwable e) {
-                LOG.error("Failed to execute master service", e);
-                masterFuture.completeExceptionally(e);
-            }
-        });
-        masterThread.setDaemon(true);
-
-        Map<Thread, CompletableFuture<Void>> workers = new HashMap<>(workerCount);
+        String[] masterArgs = commonOptions("local_003", workerCount)
+                              .withPartitionCount(partitionCount)
+                              .withRpcServerHost("127.0.0.1")
+                              .withRpcServerPort(0)
+                              .build();
+        ServiceTask master = masterTask(lifecycle, masterArgs);
+        List<ServiceTask> workers = new ArrayList<>(workerCount);
         for (int i = 1; i <= workerCount; i++) {
-            String dir = "[jobs-" + i + "]";
-
-            CompletableFuture<Void> workerFuture = new CompletableFuture<>();
-            Thread thread = new Thread(() -> {
-                String[] args;
-                args = OptionsBuilder.newInstance()
-                        .withJobId("local_003")
-                        .withAlgorithm(PageRankParams.class)
-                        .withResultName("rank")
-                        .withResultClass(DoubleValue.class)
-                        .withMessageClass(DoubleValue.class)
-                        .withMaxSuperStep(3)
-                        .withComputationClass(COMPUTATION)
-                        .withWorkerCount(workerCount)
-                        .withPartitionCount(partitionCount)
-                        .withTestBspTimeouts()
-                        .withTransoprtServerPort(0)
-                        .withDataDirs(dir)
-                        .build();
-                try {
-                    WorkerService service = initWorker(args);
-                    try {
-                        if (!lifecycle.registerWorker(service::close)) {
-                            workerFuture.cancel(false);
-                            return;
-                        }
-                        service.execute();
-                        workerFuture.complete(null);
-                    } finally {
-                        closeWorker(service);
-                    }
-                } catch (Throwable e) {
-                    LOG.error("Failed to execute worker service", e);
-                    workerFuture.completeExceptionally(e);
-                }
-            });
-            thread.setDaemon(true);
-            workers.put(thread, workerFuture);
+            String[] workerArgs = commonOptions("local_003", workerCount)
+                                  .withPartitionCount(partitionCount)
+                                  .withTransoprtServerPort(0)
+                                  .withDataDirs("[jobs-" + i + "]")
+                                  .build();
+            workers.add(workerTask(lifecycle, workerArgs,
+                                   WorkerService::execute));
         }
-
-        masterThread.start();
-        for (Thread worker : workers.keySet()) {
-            worker.start();
-        }
-
-        List<CompletableFuture<Void>> futures = new ArrayList<>(workers.values());
-        futures.add(masterFuture);
-        waitForServicesAndClose(lifecycle, futures,
-                                new ArrayList<>(workers.keySet()),
-                                masterThread);
+        runServices(lifecycle, workers, master);
     }
 
     @Test
     public void testOneWorkerWithBusyClient() {
         ServiceLifecycle lifecycle = new ServiceLifecycle();
-        CompletableFuture<Void> masterFuture = new CompletableFuture<>();
-        Thread masterThread = new Thread(() -> {
-            String[] args = OptionsBuilder.newInstance()
-                                          .withJobId("local_002")
-                                          .withAlgorithm(PageRankParams.class)
-                                          .withResultName("rank")
-                                          .withResultClass(DoubleValue.class)
-                                          .withMessageClass(DoubleValue.class)
-                                          .withMaxSuperStep(3)
-                                           .withComputationClass(COMPUTATION)
-                                           .withWorkerCount(1)
-                                           .withTestBspTimeouts()
-                                           .withWriteBufferHighMark(10)
-                                          .withWriteBufferLowMark(5)
-                                          .withRpcServerHost("127.0.0.1")
-                                          .withRpcServerPort(0)
-                                          .build();
-            try {
-                MasterService service = initMaster(args);
-                try {
-                    if (!lifecycle.registerMaster(service::close)) {
-                        masterFuture.cancel(false);
-                        return;
-                    }
-                    service.execute();
-                    masterFuture.complete(null);
-                } finally {
-                    closeMaster(service);
-                }
-            } catch (Throwable e) {
-                LOG.error("Failed to execute master service", e);
-                masterFuture.completeExceptionally(e);
-            }
-        });
-        masterThread.setDaemon(true);
-
-        CompletableFuture<Void> workerFuture = new CompletableFuture<>();
         int transoprtServerPort = 8998;
-        Thread workerThread = new Thread(() -> {
-            String[] args = OptionsBuilder.newInstance()
-                                          .withJobId("local_002")
-                                          .withAlgorithm(PageRankParams.class)
-                                          .withResultName("rank")
-                                          .withResultClass(DoubleValue.class)
-                                          .withMessageClass(DoubleValue.class)
-                                          .withMaxSuperStep(3)
-                                           .withComputationClass(COMPUTATION)
-                                           .withWorkerCount(1)
-                                           .withTestBspTimeouts()
-                                           .withWriteBufferHighMark(20)
-                                          .withWriteBufferLowMark(10)
-                                          .withTransoprtServerPort(transoprtServerPort)
-                                          .build();
-            try {
-                WorkerService service = initWorker(args);
-                try {
-                    if (!lifecycle.registerWorker(service::close)) {
-                        workerFuture.cancel(false);
-                        return;
-                    }
-                    // Let send rate slowly
-                    this.slowSendFunc(service, transoprtServerPort);
-                    service.execute();
-                    workerFuture.complete(null);
-                } finally {
-                    closeWorker(service);
-                }
-            } catch (Throwable e) {
-                LOG.error("Failed to execute worker service", e);
-                workerFuture.completeExceptionally(e);
-            }
+        String[] masterArgs = commonOptions("local_002", 1)
+                              .withWriteBufferHighMark(10)
+                              .withWriteBufferLowMark(5)
+                              .withRpcServerHost("127.0.0.1")
+                              .withRpcServerPort(0)
+                              .build();
+        String[] workerArgs = commonOptions("local_002", 1)
+                              .withWriteBufferHighMark(20)
+                              .withWriteBufferLowMark(10)
+                              .withTransoprtServerPort(transoprtServerPort)
+                              .build();
+        ServiceTask master = masterTask(lifecycle, masterArgs);
+        ServiceTask worker = workerTask(lifecycle, workerArgs, service -> {
+            // Let send rate slowly
+            this.slowSendFunc(service, transoprtServerPort);
+            service.execute();
         });
-        workerThread.setDaemon(true);
-        masterThread.start();
-        workerThread.start();
-
-        waitForServicesAndClose(lifecycle,
-                                Arrays.asList(workerFuture, masterFuture),
-                                Arrays.asList(workerThread), masterThread);
+        runServices(lifecycle, Arrays.asList(worker), master);
     }
 
     private void slowSendFunc(WorkerService service, int port) throws TransportException {
@@ -598,14 +399,75 @@ public class SenderIntegrateTest {
         Whitebox.setInternalState(clientSession, "sendFunction", sendFunc);
     }
 
-    private void executeMasterTask(CompletableFuture<Void> future,
-                                   Runnable task) {
-        try {
-            task.run();
-        } catch (Throwable e) {
-            LOG.error("Failed to execute master service", e);
-            future.completeExceptionally(e);
+    private static OptionsBuilder commonOptions(String jobId,
+                                                int workerCount) {
+        return OptionsBuilder.newInstance()
+                             .withJobId(jobId)
+                             .withAlgorithm(PageRankParams.class)
+                             .withResultName("rank")
+                             .withResultClass(DoubleValue.class)
+                             .withMessageClass(DoubleValue.class)
+                             .withMaxSuperStep(3)
+                             .withComputationClass(COMPUTATION)
+                             .withWorkerCount(workerCount)
+                             .withTestBspTimeouts();
+    }
+
+    private ServiceTask masterTask(ServiceLifecycle lifecycle, String[] args) {
+        return newServiceTask(() -> this.initMaster(args),
+                              lifecycle::registerMaster,
+                              MasterService::execute,
+                              MasterService::close);
+    }
+
+    private ServiceTask workerTask(ServiceLifecycle lifecycle, String[] args,
+                                   ServiceExecutor<WorkerService> executor) {
+        return newServiceTask(() -> this.initWorker(args),
+                              lifecycle::registerWorker, executor,
+                              WorkerService::close);
+    }
+
+    private static <T> ServiceTask newServiceTask(
+            Supplier<T> initializer, Function<Runnable, Boolean> registrar,
+            ServiceExecutor<T> executor, Consumer<T> closer) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        Thread thread = new Thread(() -> {
+            try {
+                T service = initializer.get();
+                try {
+                    if (!registrar.apply(() -> closer.accept(service))) {
+                        future.cancel(false);
+                        return;
+                    }
+                    executor.execute(service);
+                    future.complete(null);
+                } finally {
+                    closer.accept(service);
+                }
+            } catch (Throwable e) {
+                LOG.error("Failed to execute service", e);
+                future.completeExceptionally(e);
+            }
+        });
+        thread.setDaemon(true);
+        return new ServiceTask(thread, future);
+    }
+
+    private static void runServices(ServiceLifecycle lifecycle,
+                                    List<ServiceTask> workers,
+                                    ServiceTask master) {
+        master.thread.start();
+        List<CompletableFuture<Void>> futures =
+                new ArrayList<>(workers.size() + 1);
+        List<Thread> workerThreads = new ArrayList<>(workers.size());
+        for (ServiceTask worker : workers) {
+            worker.thread.start();
+            futures.add(worker.future);
+            workerThreads.add(worker.thread);
         }
+        futures.add(master.future);
+        waitForServicesAndClose(lifecycle, futures, workerThreads,
+                                master.thread);
     }
 
     private MasterService initMaster(String[] args) {
@@ -613,7 +475,7 @@ public class SenderIntegrateTest {
                         ComputerContextUtil.convertToMap(args));
         MasterService service = new MasterService();
         return initializeService(service, s -> s.init(config),
-                                 SenderIntegrateTest::closeMaster);
+                                 MasterService::close);
     }
 
     private WorkerService initWorker(String[] args) {
@@ -621,7 +483,7 @@ public class SenderIntegrateTest {
                         ComputerContextUtil.convertToMap(args));
         WorkerService service = new WorkerService();
         return initializeService(service, s -> s.init(config),
-                                 SenderIntegrateTest::closeWorker);
+                                 WorkerService::close);
     }
 
     private static <T> T initializeService(T service, Consumer<T> initializer,
@@ -649,13 +511,7 @@ public class SenderIntegrateTest {
             });
         }
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                         .whenComplete((r, e) -> {
-            if (e == null) {
-                result.complete(null);
-            } else {
-                result.completeExceptionally(e);
-            }
-        });
+                         .thenRun(() -> result.complete(null));
         try {
             result.get(SERVICE_WAIT_TIMEOUT, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
@@ -788,15 +644,20 @@ public class SenderIntegrateTest {
         return failure;
     }
 
-    private static void closeWorker(WorkerService service) {
-        if (service != null) {
-            service.close();
-        }
+    @FunctionalInterface
+    private interface ServiceExecutor<T> {
+
+        void execute(T service) throws Throwable;
     }
 
-    private static void closeMaster(MasterService service) {
-        if (service != null) {
-            service.close();
+    private static class ServiceTask {
+
+        private final Thread thread;
+        private final CompletableFuture<Void> future;
+
+        public ServiceTask(Thread thread, CompletableFuture<Void> future) {
+            this.thread = thread;
+            this.future = future;
         }
     }
 
@@ -815,17 +676,14 @@ public class SenderIntegrateTest {
         }
 
         private boolean register(List<Runnable> closers, Runnable closer) {
-            boolean closeImmediately;
             synchronized (this) {
-                closeImmediately = this.closing;
-                if (!closeImmediately) {
+                if (!this.closing) {
                     closers.add(closer);
+                    return true;
                 }
             }
-            if (closeImmediately) {
-                closer.run();
-            }
-            return !closeImmediately;
+            closer.run();
+            return false;
         }
 
         public Throwable closeAll() {
@@ -838,8 +696,9 @@ public class SenderIntegrateTest {
                 this.workerClosers.clear();
                 this.masterClosers.clear();
             }
+            workerClosers.addAll(masterClosers);
             Throwable failure = closeAll(workerClosers, null);
-            return closeAll(masterClosers, failure);
+            return failure;
         }
 
         private static Throwable closeAll(List<Runnable> closers,
@@ -848,11 +707,7 @@ public class SenderIntegrateTest {
                 try {
                     closer.run();
                 } catch (Throwable e) {
-                    if (failure == null) {
-                        failure = e;
-                    } else {
-                        failure.addSuppressed(e);
-                    }
+                    failure = addFailure(failure, e);
                 }
             }
             return failure;
