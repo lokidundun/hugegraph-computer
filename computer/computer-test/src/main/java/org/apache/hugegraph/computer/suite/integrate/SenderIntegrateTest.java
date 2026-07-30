@@ -449,7 +449,7 @@ public class SenderIntegrateTest {
     @Test
     public void testOneWorkerWithBusyClient() {
         ServiceLifecycle lifecycle = new ServiceLifecycle();
-        int transoprtServerPort = 8998;
+        int transportServerPort = 8998;
         String[] masterArgs = commonOptions("local_002", 1)
                               .withWriteBufferHighMark(10)
                               .withWriteBufferLowMark(5)
@@ -459,12 +459,12 @@ public class SenderIntegrateTest {
         String[] workerArgs = commonOptions("local_002", 1)
                               .withWriteBufferHighMark(20)
                               .withWriteBufferLowMark(10)
-                              .withTransoprtServerPort(transoprtServerPort)
+                              .withTransoprtServerPort(transportServerPort)
                               .build();
         ServiceTask master = masterTask(lifecycle, masterArgs);
         ServiceTask worker = workerTask(lifecycle, workerArgs, service -> {
             // Let send rate slowly
-            this.slowSendFunc(service, transoprtServerPort);
+            this.slowSendFunc(service, transportServerPort);
             service.execute();
         });
         runServices(lifecycle, Arrays.asList(worker), master);

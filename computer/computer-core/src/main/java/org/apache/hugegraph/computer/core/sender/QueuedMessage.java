@@ -33,8 +33,8 @@ public class QueuedMessage {
         this(partitionId, type, buffer, null);
     }
 
-    public QueuedMessage(int partitionId, MessageType type, ByteBuffer buffer,
-                         CompletableFuture<Void> controlFuture) {
+    QueuedMessage(int partitionId, MessageType type, ByteBuffer buffer,
+                  CompletableFuture<Void> controlFuture) {
         this.partitionId = partitionId;
         this.type = type;
         this.buffer = buffer;
@@ -53,7 +53,7 @@ public class QueuedMessage {
         return this.buffer;
     }
 
-    public CompletableFuture<Void> controlFuture() {
+    CompletableFuture<Void> controlFuture() {
         return this.controlFuture;
     }
 }
