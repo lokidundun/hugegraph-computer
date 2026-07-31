@@ -90,8 +90,6 @@ public class SenderIntegrateTest {
                                           .withMaxSuperStep(3)
                                           .withComputationClass(COMPUTATION)
                                           .withWorkerCount(1)
-                                          .withBufferThreshold(50)
-                                          .withBufferCapacity(60)
                                           .withRpcServerHost("127.0.0.1")
                                           .withRpcServerPort(8611)
                                         .withRpcServerPort(0)
@@ -119,8 +117,6 @@ public class SenderIntegrateTest {
                                           .withMaxSuperStep(3)
                                           .withComputationClass(COMPUTATION)
                                           .withWorkerCount(1)
-                                          .withBufferThreshold(50)
-                                          .withBufferCapacity(60)
                                         .withTransportServerPort(0)
                                         .withTestBspTimeouts()
                                         .build();
@@ -253,8 +249,6 @@ public class SenderIntegrateTest {
                                           .withMaxSuperStep(3)
                                           .withComputationClass(COMPUTATION)
                                           .withWorkerCount(1)
-                                          .withWriteBufferHighMark(10)
-                                          .withWriteBufferLowMark(5)
                                           .withRpcServerHost("127.0.0.1")
                                         .withRpcServerPort(0)
                                         .withTestBspTimeouts()
@@ -282,8 +276,6 @@ public class SenderIntegrateTest {
                                           .withMaxSuperStep(3)
                                           .withComputationClass(COMPUTATION)
                                           .withWorkerCount(1)
-                                          .withWriteBufferHighMark(20)
-                                          .withWriteBufferLowMark(10)
                                         .withTransportServerPort(
                                          transportServerPort)
                                         .withTestBspTimeouts()
@@ -420,7 +412,16 @@ public class SenderIntegrateTest {
 
     private static void awaitServices(long timeout,
                                       CompletableFuture<Void>... futures) {
-        CompletableFuture.allOf(futures)
+        CompletableFuture<Void> allDone = CompletableFuture.allOf(futures);
+        CompletableFuture<Void> firstFailure = new CompletableFuture<>();
+        for (CompletableFuture<Void> future : futures) {
+            future.whenComplete((result, error) -> {
+                if (error != null) {
+                    firstFailure.completeExceptionally(error);
+                }
+            });
+        }
+        CompletableFuture.anyOf(firstFailure, allDone)
                          .orTimeout(timeout, TimeUnit.MILLISECONDS)
                          .join();
     }
