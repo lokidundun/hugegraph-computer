@@ -84,6 +84,10 @@ public class QueuedMessageSender implements MessageSender {
     @Override
     public CompletableFuture<Void> send(int workerId, MessageType type)
                                         throws InterruptedException {
+        E.checkArgument(type == MessageType.START ||
+                        type == MessageType.FINISH,
+                        "The control message type must be START or FINISH, " +
+                        "but got '%s'", type);
         WorkerChannel channel = this.channels[channelId(workerId)];
         CompletableFuture<Void> future = new CompletableFuture<>();
         if (!channel.setControlFuture(future)) {
@@ -105,6 +109,10 @@ public class QueuedMessageSender implements MessageSender {
     @Override
     public void send(int workerId, QueuedMessage message)
                      throws InterruptedException {
+        E.checkArgument(message.type() != null &&
+                        message.type().category() == MessageType.Category.DATA,
+                        "The queued message type must be DATA, but got '%s'",
+                        message.type());
         WorkerChannel channel = this.channels[channelId(workerId)];
         channel.queue.put(message);
     }
@@ -253,14 +261,22 @@ public class QueuedMessageSender implements MessageSender {
                               throws TransportException, InterruptedException {
             switch (message.type()) {
                 case START:
-                    this.sendStartMessage(message.controlFuture());
+                    this.sendStartMessage(this.controlFuture(message));
                     return true;
                 case FINISH:
-                    this.sendFinishMessage(message.controlFuture());
+                    this.sendFinishMessage(this.controlFuture(message));
                     return true;
                 default:
                     return this.sendDataMessage(message);
             }
+        }
+
+        private CompletableFuture<Void> controlFuture(QueuedMessage message) {
+            CompletableFuture<Void> future = message.controlFuture();
+            E.checkState(future != null,
+                         "The control future can't be null for message '%s'",
+                         message.type());
+            return future;
         }
 
         public void sendStartMessage(CompletableFuture<Void> future) {
@@ -345,11 +361,12 @@ public class QueuedMessageSender implements MessageSender {
         }
 
         private boolean controlFutureInFlight(CompletableFuture<Void> future) {
-            return this.controlFutureRef.get() == future;
+            return future != null && this.controlFutureRef.get() == future;
         }
 
         private void completeControlFuture(CompletableFuture<Void> future,
                                            Throwable cause) {
+            E.checkState(future != null, "The control future can't be null");
             if (!this.controlFutureRef.compareAndSet(future, null)) {
                 if (cause != null) {
                     this.failDataSend(cause);

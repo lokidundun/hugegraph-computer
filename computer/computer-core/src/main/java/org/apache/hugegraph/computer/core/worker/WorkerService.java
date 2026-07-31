@@ -176,7 +176,6 @@ public class WorkerService implements Closeable {
                 this.computeManager.close();
             } else {
                 LOG.warn("The computeManager is null");
-                return;
             }
         } catch (Exception e) {
             LOG.error("Error when closing ComputeManager", e);
@@ -194,8 +193,12 @@ public class WorkerService implements Closeable {
         }
 
         try {
-            this.bsp4Worker.workerCloseDone();
-            this.bsp4Worker.close();
+            if (this.bsp4Worker != null) {
+                if (this.inited) {
+                    this.bsp4Worker.workerCloseDone();
+                }
+                this.bsp4Worker.close();
+            }
         } catch (Exception e) {
             LOG.error("Error while closing bsp4Worker", e);
         }
