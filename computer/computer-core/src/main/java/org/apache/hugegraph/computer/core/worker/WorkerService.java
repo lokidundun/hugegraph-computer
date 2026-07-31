@@ -63,6 +63,7 @@ public class WorkerService implements Closeable {
 
     private volatile boolean inited;
     private volatile boolean closed;
+    private volatile boolean registered;
 
     private final ComputerContext context;
     private final Map<Integer, ContainerInfo> workers;
@@ -83,6 +84,7 @@ public class WorkerService implements Closeable {
         this.workers = new HashMap<>();
         this.inited = false;
         this.closed = false;
+        this.registered = false;
         this.shutdownHook = new ShutdownHook();
     }
 
@@ -113,6 +115,7 @@ public class WorkerService implements Closeable {
 
             LOG.info("{} register WorkerService", this);
             this.bsp4Worker.workerInitDone();
+            this.registered = true;
             this.connectToWorkers();
 
             this.computeManager = new ComputeManager(this.workerInfo.id(), this.context,
@@ -194,7 +197,7 @@ public class WorkerService implements Closeable {
 
         try {
             if (this.bsp4Worker != null) {
-                if (this.inited) {
+                if (this.registered) {
                     this.bsp4Worker.workerCloseDone();
                 }
                 this.bsp4Worker.close();

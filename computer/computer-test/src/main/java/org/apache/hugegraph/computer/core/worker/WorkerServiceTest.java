@@ -22,6 +22,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import org.apache.hugegraph.computer.core.bsp.Bsp4Worker;
 import org.apache.hugegraph.computer.core.common.exception.ComputerException;
 import org.apache.hugegraph.computer.core.config.ComputerOptions;
 import org.apache.hugegraph.computer.core.config.Config;
@@ -31,8 +32,10 @@ import org.apache.hugegraph.computer.core.output.LimitedLogOutput;
 import org.apache.hugegraph.computer.suite.unit.UnitTestBase;
 import org.apache.hugegraph.config.RpcOptions;
 import org.apache.hugegraph.testutil.Assert;
+import org.apache.hugegraph.testutil.Whitebox;
 import org.apache.hugegraph.util.Log;
 import org.junit.Test;
+import org.mockito.Mockito;
 import org.slf4j.Logger;
 
 public class WorkerServiceTest extends UnitTestBase {
@@ -230,6 +233,18 @@ public class WorkerServiceTest extends UnitTestBase {
                                       e.getCause().getMessage());
             });
         }
+    }
+
+    @Test
+    public void testCloseSendsWorkerCloseDoneWhenRegisteredButNotInited() {
+        WorkerService service = new WorkerService();
+        Bsp4Worker bsp4Worker = Mockito.mock(Bsp4Worker.class);
+        Whitebox.setInternalState(service, "bsp4Worker", bsp4Worker);
+        Whitebox.setInternalState(service, "registered", true);
+        Whitebox.setInternalState(service, "inited", false);
+        service.close();
+        Mockito.verify(bsp4Worker).workerCloseDone();
+        Mockito.verify(bsp4Worker).close();
     }
 
     @Test
