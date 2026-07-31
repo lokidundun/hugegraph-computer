@@ -60,9 +60,6 @@ public class SenderIntegrateTest {
     public static final Logger LOG = Log.logger(SenderIntegrateTest.class);
 
     private static final Class<?> COMPUTATION = MockComputation.class;
-    private static final long BSP_WAIT_TIMEOUT =
-                              TimeUnit.SECONDS.toMillis(30L);
-
     @BeforeClass
     public static void init() {
         // pass
@@ -92,9 +89,8 @@ public class SenderIntegrateTest {
                                           .withBufferCapacity(60)
                                           .withRpcServerHost("127.0.0.1")
                                           .withRpcServerPort(8611)
-                                          .withRpcServerPort(0)
-                                          .withTestBspTimeouts()
-                                          .build();
+                                        .withRpcServerPort(0)
+                                        .build();
             try (MasterService service = initMaster(
                                        args, masterServiceRef::set)) {
                 service.execute();
@@ -119,9 +115,8 @@ public class SenderIntegrateTest {
                                           .withWorkerCount(1)
                                           .withBufferThreshold(50)
                                           .withBufferCapacity(60)
-                                          .withTransportServerPort(0)
-                                          .withTestBspTimeouts()
-                                          .build();
+                                        .withTransportServerPort(0)
+                                        .build();
             try (WorkerService service = initWorker(
                                        args, workerServiceRef::set)) {
                 service.execute();
@@ -166,9 +161,8 @@ public class SenderIntegrateTest {
                                           .withWorkerCount(workerCount)
                                           .withPartitionCount(partitionCount)
                                           .withRpcServerHost("127.0.0.1")
-                                          .withRpcServerPort(0)
-                                          .withTestBspTimeouts()
-                                          .build();
+                                        .withRpcServerPort(0)
+                                        .build();
             try {
                 MasterService service = initMaster(
                                         args, masterServiceRef::set);
@@ -198,10 +192,9 @@ public class SenderIntegrateTest {
                         .withComputationClass(COMPUTATION)
                         .withWorkerCount(workerCount)
                         .withPartitionCount(partitionCount)
-                        .withTransportServerPort(0)
-                        .withDataDirs(dir)
-                        .withTestBspTimeouts()
-                        .build();
+                   .withTransportServerPort(0)
+                   .withDataDirs(dir)
+                   .build();
                 try {
                     WorkerService service = initWorker(
                                             args, workerServices::add);
@@ -255,9 +248,8 @@ public class SenderIntegrateTest {
                                           .withWriteBufferHighMark(10)
                                           .withWriteBufferLowMark(5)
                                           .withRpcServerHost("127.0.0.1")
-                                          .withRpcServerPort(0)
-                                          .withTestBspTimeouts()
-                                          .build();
+                                        .withRpcServerPort(0)
+                                        .build();
             try (MasterService service = initMaster(
                                        args, masterServiceRef::set)) {
                 service.execute();
@@ -283,10 +275,9 @@ public class SenderIntegrateTest {
                                           .withWorkerCount(1)
                                           .withWriteBufferHighMark(20)
                                           .withWriteBufferLowMark(10)
-                                          .withTransportServerPort(
-                                           transportServerPort)
-                                          .withTestBspTimeouts()
-                                          .build();
+                                        .withTransportServerPort(
+                                         transportServerPort)
+                                        .build();
             try (WorkerService service = initWorker(
                                        args, workerServiceRef::set)) {
                 // Let send rate slowly
@@ -513,14 +504,5 @@ public class SenderIntegrateTest {
             return this;
         }
 
-        public OptionsBuilder withTestBspTimeouts() {
-            this.options.add(ComputerOptions.BSP_REGISTER_TIMEOUT.name());
-            this.options.add(String.valueOf(BSP_WAIT_TIMEOUT));
-            this.options.add(ComputerOptions.BSP_WAIT_WORKERS_TIMEOUT.name());
-            this.options.add(String.valueOf(BSP_WAIT_TIMEOUT));
-            this.options.add(ComputerOptions.BSP_WAIT_MASTER_TIMEOUT.name());
-            this.options.add(String.valueOf(BSP_WAIT_TIMEOUT));
-            return this;
-        }
     }
 }
