@@ -72,10 +72,9 @@ public class QueuedMessageSenderTest extends UnitTestBase {
     public void testInitAndClose() {
         QueuedMessageSender sender = this.newSender(new MockTransportClient(),
                                                     new MockTransportClient());
-
+        Thread sendExecutor = Whitebox.getInternalState(sender,
+                                                        "sendExecutor");
         try {
-            Thread sendExecutor = Whitebox.getInternalState(sender,
-                                                            "sendExecutor");
             Assert.assertTrue(ImmutableSet.of(Thread.State.NEW,
                                               Thread.State.RUNNABLE,
                                               Thread.State.WAITING)
@@ -83,6 +82,7 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         } finally {
             sender.close();
         }
+        Assert.assertEquals(Thread.State.TERMINATED, sendExecutor.getState());
     }
 
     @Test
