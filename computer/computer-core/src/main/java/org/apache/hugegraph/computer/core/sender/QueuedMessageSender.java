@@ -44,6 +44,8 @@ public class QueuedMessageSender implements MessageSender {
     private final Thread sendExecutor;
     private final BarrierEvent anyQueueNotEmptyEvent;
     private final BarrierEvent anyClientNotBusyEvent;
+    private final AtomicReference<Throwable> fatalError;
+    private volatile boolean closed;
 
     public QueuedMessageSender(Config config) {
         int workerCount = config.get(ComputerOptions.JOB_WORKERS_COUNT);
@@ -53,6 +55,7 @@ public class QueuedMessageSender implements MessageSender {
         this.sendExecutor = new Thread(new Sender(), NAME);
         this.anyQueueNotEmptyEvent = new BarrierEvent();
         this.anyClientNotBusyEvent = new BarrierEvent();
+        this.fatalError = new AtomicReference<>();
     }
 
     public void init() {
@@ -63,13 +66,28 @@ public class QueuedMessageSender implements MessageSender {
     }
 
     public void close() {
+        this.closed = true;
         this.sendExecutor.interrupt();
         try {
             this.sendExecutor.join();
         } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             throw new ComputerException("Interrupted when waiting for " +
                                         "send-executor to stop", e);
         }
+    }
+
+    @Override
+    public void checkFatal() {
+        Throwable error = this.fatalError.get();
+        if (error != null) {
+            throw new ComputerException("Send-executor encountered fatal error",
+                                        error);
+        }
+    }
+
+    private void recordFatal(Throwable error) {
+        this.fatalError.compareAndSet(null, error);
     }
 
     public void addWorkerClient(int workerId, TransportClient client) {
@@ -84,6 +102,7 @@ public class QueuedMessageSender implements MessageSender {
     @Override
     public CompletableFuture<Void> send(int workerId, MessageType type)
                                         throws InterruptedException {
+        this.checkFatal();
         E.checkArgument(type == MessageType.START ||
                         type == MessageType.FINISH,
                         "The control message type must be START or FINISH, " +
@@ -109,6 +128,7 @@ public class QueuedMessageSender implements MessageSender {
     @Override
     public void send(int workerId, QueuedMessage message)
                      throws InterruptedException {
+        this.checkFatal();
         E.checkArgument(message.type() != null &&
                         message.type().category() == MessageType.Category.DATA,
                         "The queued message type must be DATA, but got '%s'",
@@ -140,62 +160,75 @@ public class QueuedMessageSender implements MessageSender {
         public void run() {
             LOG.info("The send-executor is running");
             Thread thread = Thread.currentThread();
-            while (!thread.isInterrupted()) {
-                try {
-                    int emptyQueueCount = 0;
-                    int busyClientCount = 0;
-                    for (WorkerChannel channel : channels) {
-                        QueuedMessage message = channel.queue.peek();
-                        if (message == null) {
-                            ++emptyQueueCount;
-                            continue;
-                        }
-                        try {
-                            if (channel.doSend(message)) {
-                                // Only consume the message after it is sent
-                                channel.queue.take();
-                            } else {
-                                ++busyClientCount;
+            try {
+                while (!thread.isInterrupted()) {
+                    try {
+                        int emptyQueueCount = 0;
+                        int busyClientCount = 0;
+                        for (WorkerChannel channel : channels) {
+                            QueuedMessage message = channel.queue.peek();
+                            if (message == null) {
+                                ++emptyQueueCount;
+                                continue;
                             }
-                        } catch (TransportException | RuntimeException e) {
-                            channel.failDataSend(e);
-                            // Discard the failed data message to keep sending
-                            channel.queue.take();
-                            LOG.warn("Failed to send {} message to {}, " +
-                                     "discard it", message.type(), channel, e);
+                            try {
+                                if (channel.doSend(message)) {
+                                    // Only consume the message after it is sent
+                                    channel.queue.take();
+                                } else {
+                                    ++busyClientCount;
+                                }
+                            } catch (TransportException | RuntimeException e) {
+                                channel.failDataSend(e);
+                                // Discard the failed data message to keep sending
+                                channel.queue.take();
+                                LOG.warn("Failed to send {} message to {}, " +
+                                         "discard it", message.type(), channel, e);
+                            }
                         }
-                    }
-                    int channelCount = channels.length;
-                    /*
-                     * If all queues are empty, let send thread wait
-                     * until any queue is available
-                     */
-                    if (emptyQueueCount >= channelCount) {
-                        LOG.debug("The send executor was blocked " +
-                                  "to wait any queue not empty");
-                        QueuedMessageSender.this.waitAnyQueueNotEmpty();
-                    }
-                    /*
-                     * If all clients are busy, let send thread wait
-                     * until any client is available
-                     */
-                    if (busyClientCount >= channelCount) {
-                        LOG.debug("The send executor was blocked " +
-                                  "to wait any client not busy");
-                        QueuedMessageSender.this.waitAnyClientNotBusy();
-                    }
-                } catch (InterruptedException e) {
-                    // Reset interrupted flag
-                    thread.interrupt();
-                    // Any client is active means that sending task in running
-                    if (QueuedMessageSender.this.activeClientCount() > 0) {
-                        throw new ComputerException(
-                                  "Interrupted when waiting for message " +
-                                  "queue not empty");
+                        int channelCount = channels.length;
+                        /*
+                         * If all queues are empty, let send thread wait
+                         * until any queue is available
+                         */
+                        if (emptyQueueCount >= channelCount) {
+                            LOG.debug("The send executor was blocked " +
+                                      "to wait any queue not empty");
+                            QueuedMessageSender.this.waitAnyQueueNotEmpty();
+                        }
+                        /*
+                         * If all clients are busy, let send thread wait
+                         * until any client is available
+                         */
+                        if (busyClientCount >= channelCount) {
+                            LOG.debug("The send executor was blocked " +
+                                      "to wait any client not busy");
+                            QueuedMessageSender.this.waitAnyClientNotBusy();
+                        }
+                    } catch (InterruptedException e) {
+                        // Reset interrupted flag
+                        thread.interrupt();
+                        if (QueuedMessageSender.this.closed) {
+                            // Normal shutdown path
+                            return;
+                        }
+                        // Any client is active means that sending task in running
+                        if (QueuedMessageSender.this.activeClientCount() > 0) {
+                            throw new ComputerException(
+                                      "Interrupted when waiting for message " +
+                                      "queue not empty");
+                        }
                     }
                 }
+            } catch (Throwable t) {
+                if (!QueuedMessageSender.this.closed) {
+                    QueuedMessageSender.this.recordFatal(t);
+                    LOG.error("The send-executor terminated unexpectedly", t);
+                }
+                return;
+            } finally {
+                LOG.info("The send-executor is terminated");
             }
-            LOG.info("The send-executor is terminated");
         }
     }
 
@@ -216,6 +249,10 @@ public class QueuedMessageSender implements MessageSender {
         } catch (InterruptedException e) {
             // Reset interrupted flag
             Thread.currentThread().interrupt();
+            if (this.closed) {
+                // Normal shutdown, do not treat as error
+                return;
+            }
             throw new ComputerException("Interrupted when waiting any client " +
                                         "not busy");
         } finally {
