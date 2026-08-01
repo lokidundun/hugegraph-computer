@@ -91,8 +91,10 @@ public class SenderIntegrateTest {
                                           .withMaxSuperStep(3)
                                           .withComputationClass(COMPUTATION)
                                           .withWorkerCount(1)
-                                          .withBufferThreshold(50)
-                                          .withBufferCapacity(60)
+                                          // 4KB keeps the sort+send path exercised without
+                                          // flooding the ACK-throttled transport (50B stalled)
+                                          .withBufferThreshold(4096)
+                                          .withBufferCapacity(8192)
                                           .withRpcServerHost("127.0.0.1")
                                           .withRpcServerPort(8611)
                                         .withRpcServerPort(0)
@@ -120,8 +122,8 @@ public class SenderIntegrateTest {
                                           .withMaxSuperStep(3)
                                           .withComputationClass(COMPUTATION)
                                           .withWorkerCount(1)
-                                          .withBufferThreshold(50)
-                                          .withBufferCapacity(60)
+                                          .withBufferThreshold(4096)
+                                          .withBufferCapacity(8192)
                                         .withTransportServerPort(0)
                                         .withTestBspTimeouts()
                                         .build();
