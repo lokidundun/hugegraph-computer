@@ -253,8 +253,10 @@ public class QueuedMessageSender implements MessageSender {
                 // Normal shutdown, do not treat as error
                 return;
             }
-            throw new ComputerException("Interrupted when waiting any client " +
-                                        "not busy");
+            ComputerException error = new ComputerException(
+                    "Interrupted when waiting any client not busy");
+            this.recordFatal(error);
+            throw error;
         } finally {
             this.anyClientNotBusyEvent.reset();
         }

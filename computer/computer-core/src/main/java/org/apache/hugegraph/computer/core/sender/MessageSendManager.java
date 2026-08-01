@@ -150,6 +150,7 @@ public class MessageSendManager implements Manager {
                                     .map(this.partitioner::workerId)
                                     .collect(Collectors.toSet());
         this.sendControlMessageToWorkers(workerIds, MessageType.START);
+        this.sender.checkFatal();
         LOG.info("Start sending message(type={})", type);
     }
 

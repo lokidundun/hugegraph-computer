@@ -381,6 +381,10 @@ public class WorkerService implements Closeable {
         WorkerInputManager manager = this.managers.get(WorkerInputManager.NAME);
         manager.loadGraph();
 
+        // Fail fast if the sender thread died, before signaling workerInputDone
+        MessageSendManager sendManager = this.managers.get(MessageSendManager.NAME);
+        sendManager.checkFatal();
+
         this.bsp4Worker.workerInputDone();
         this.bsp4Worker.waitMasterInputDone();
 
