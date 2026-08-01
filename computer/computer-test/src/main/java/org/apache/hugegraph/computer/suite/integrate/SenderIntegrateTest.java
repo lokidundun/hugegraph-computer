@@ -62,8 +62,9 @@ public class SenderIntegrateTest {
     public static final Logger LOG = Log.logger(SenderIntegrateTest.class);
 
     private static final Class<?> COMPUTATION = MockComputation.class;
+    private static final long BSP_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(90L);
     private static final long SERVICE_WAIT_TIMEOUT =
-                                  TimeUnit.SECONDS.toMillis(60L);
+            BSP_TIMEOUT_MS + TimeUnit.SECONDS.toMillis(30L);
 
     @BeforeClass
     public static void init() {
@@ -558,9 +559,9 @@ public class SenderIntegrateTest {
 
         public OptionsBuilder withTestBspTimeouts() {
             this.options.add(ComputerOptions.BSP_WAIT_WORKERS_TIMEOUT.name());
-            this.options.add(String.valueOf(TimeUnit.SECONDS.toMillis(30L)));
+            this.options.add(String.valueOf(BSP_TIMEOUT_MS));
             this.options.add(ComputerOptions.BSP_WAIT_MASTER_TIMEOUT.name());
-            this.options.add(String.valueOf(TimeUnit.SECONDS.toMillis(30L)));
+            this.options.add(String.valueOf(BSP_TIMEOUT_MS));
             return this;
         }
 
