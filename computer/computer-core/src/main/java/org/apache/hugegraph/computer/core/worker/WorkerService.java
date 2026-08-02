@@ -88,6 +88,11 @@ public class WorkerService implements Closeable {
         this.shutdownHook = new ShutdownHook();
     }
 
+    WorkerService(Bsp4Worker bsp4Worker) {
+        this();
+        this.bsp4Worker = bsp4Worker;
+    }
+
     /**
      * Init worker service, create the managers used by worker service.
      */
@@ -103,7 +108,9 @@ public class WorkerService implements Closeable {
             this.workerInfo = new ContainerInfo();
 
             LOG.info("{} Start to initialize worker", this);
-            this.bsp4Worker = new Bsp4Worker(this.config, this.workerInfo);
+            if (this.bsp4Worker == null) {
+                this.bsp4Worker = new Bsp4Worker(this.config, this.workerInfo);
+            }
             /*
              * Keep the waitMasterInitDone() called before initManagers(),
              * in order to ensure master init() before worker managers init()
