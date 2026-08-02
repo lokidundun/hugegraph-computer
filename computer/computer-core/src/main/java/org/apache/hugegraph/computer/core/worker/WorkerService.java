@@ -317,7 +317,7 @@ public class WorkerService implements Closeable {
         return String.format("[worker %s]", id);
     }
 
-    private InetSocketAddress initManagers(ContainerInfo masterInfo) {
+    InetSocketAddress initManagers(ContainerInfo masterInfo) {
         // Create managers
         WorkerRpcManager rpcManager = new WorkerRpcManager();
         this.managers.add(rpcManager);

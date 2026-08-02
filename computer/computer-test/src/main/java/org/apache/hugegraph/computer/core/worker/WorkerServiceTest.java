@@ -17,6 +17,7 @@
 
 package org.apache.hugegraph.computer.core.worker;
 
+import java.net.InetSocketAddress;
 import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -258,7 +259,13 @@ public class WorkerServiceTest extends UnitTestBase {
                 DoubleValue.class.getName()
         );
 
-        try (WorkerService service = new WorkerService(bsp4Worker)) {
+        try (WorkerService service = new WorkerService(bsp4Worker) {
+            @Override
+            InetSocketAddress initManagers(ContainerInfo masterInfo) {
+                return new InetSocketAddress(masterInfo.hostname(),
+                                             masterInfo.rpcPort());
+            }
+        }) {
             Assert.assertThrows(ComputerException.class, () -> {
                 service.init(config);
             });
