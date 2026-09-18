@@ -67,6 +67,9 @@ public class QueuedMessageSender implements MessageSender {
 
     public void close() {
         this.closed = true;
+        Throwable error = this.fatalError.get();
+        this.failChannels(error != null ? error :
+                          new ComputerException("Send-executor closed"));
         this.sendExecutor.interrupt();
         try {
             this.sendExecutor.join();
@@ -87,7 +90,17 @@ public class QueuedMessageSender implements MessageSender {
     }
 
     private void recordFatal(Throwable error) {
-        this.fatalError.compareAndSet(null, error);
+        if (this.fatalError.compareAndSet(null, error)) {
+            this.failChannels(error);
+        }
+    }
+
+    private void failChannels(Throwable error) {
+        for (WorkerChannel channel : this.channels) {
+            if (channel != null) {
+                channel.failDataSend(error);
+            }
+        }
     }
 
     public void addWorkerClient(int workerId, TransportClient client) {

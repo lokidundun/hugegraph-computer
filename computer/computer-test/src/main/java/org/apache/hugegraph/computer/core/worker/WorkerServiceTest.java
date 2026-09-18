@@ -259,7 +259,12 @@ public class WorkerServiceTest extends UnitTestBase {
                 DoubleValue.class.getName()
         );
 
-        try (WorkerService service = new WorkerService(bsp4Worker) {
+        try (WorkerService service = new WorkerService() {
+            @Override
+            Bsp4Worker newBsp4Worker() {
+                return bsp4Worker;
+            }
+
             @Override
             InetSocketAddress initManagers(ContainerInfo masterInfo) {
                 return new InetSocketAddress(masterInfo.hostname(),

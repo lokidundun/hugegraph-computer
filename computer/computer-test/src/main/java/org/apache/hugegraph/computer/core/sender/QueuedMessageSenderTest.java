@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.apache.hugegraph.computer.core.common.exception.ComputerException;
 import org.apache.hugegraph.computer.core.common.exception.TransportException;
 import org.apache.hugegraph.computer.core.config.ComputerOptions;
 import org.apache.hugegraph.computer.core.config.Config;
@@ -83,6 +84,57 @@ public class QueuedMessageSenderTest extends UnitTestBase {
             sender.close();
         }
         Assert.assertEquals(Thread.State.TERMINATED, sendExecutor.getState());
+    }
+
+    @Test
+    public void testFatalExecutorCompletesQueuedFinish() throws Exception {
+        ControlFutureClient client = new ControlFutureClient();
+        ControlFutureClient second = new ControlFutureClient(2);
+        client.dataSendBusy = true;
+        second.dataSendBusy = true;
+        QueuedMessageSender sender = this.newSender(client, second);
+        try {
+            sender.send(1, new QueuedMessage(0, MessageType.MSG,
+                                             ByteBuffer.allocate(1)));
+            sender.send(2, new QueuedMessage(0, MessageType.MSG,
+                                             ByteBuffer.allocate(1)));
+            Assert.assertTrue(await(client.dataSendCalled));
+            Assert.assertTrue(await(second.dataSendCalled));
+            CompletableFuture<Void> finish = sender.send(1, MessageType.FINISH);
+            Thread executor = Whitebox.getInternalState(sender, "sendExecutor");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5L);
+            while (executor.getState() != Thread.State.WAITING &&
+                   System.nanoTime() < deadline) {
+                Thread.sleep(10L);
+            }
+            Assert.assertEquals(Thread.State.WAITING, executor.getState());
+            executor.interrupt();
+            executor.join(TimeUnit.SECONDS.toMillis(1));
+            Assert.assertFalse(executor.isAlive());
+            AtomicReference<Throwable> fatal =
+                    Whitebox.getInternalState(sender, "fatalError");
+            Assert.assertThrows(ComputerException.class, sender::checkFatal);
+            assertFutureFailedWith(finish, fatal.get());
+        } finally {
+            sender.close();
+        }
+    }
+
+    @Test
+    public void testCloseCompletesQueuedFinish() throws Exception {
+        ControlFutureClient client = new ControlFutureClient();
+        client.dataSendBusy = true;
+        QueuedMessageSender sender = this.newSender(client, new MockTransportClient());
+        try {
+            sender.send(1, new QueuedMessage(0, MessageType.MSG,
+                                             ByteBuffer.allocate(1)));
+            Assert.assertTrue(await(client.dataSendCalled));
+            CompletableFuture<Void> finish = sender.send(1, MessageType.FINISH);
+            sender.close();
+            assertFutureFailedWithMessage(finish, "closed");
+        } finally {
+            sender.close();
+        }
     }
 
     @Test
@@ -547,6 +599,7 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         private Throwable finishFailure;
         private Throwable dataFailure;
         private boolean blockDataSend;
+        private boolean dataSendBusy;
 
         private ControlFutureClient() {
             this(1);
@@ -580,6 +633,10 @@ public class QueuedMessageSenderTest extends UnitTestBase {
         @Override
         public boolean send(MessageType messageType, int partition,
                             ByteBuffer buffer) throws TransportException {
+            if (this.dataSendBusy) {
+                this.dataSendCalled.countDown();
+                return false;
+            }
             if (this.blockDataSend) {
                 this.dataSendCalled.countDown();
                 try {
